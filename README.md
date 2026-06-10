@@ -79,16 +79,16 @@ smi.exe inject -p REPO -a "REPO New Cheat.dll" -n Cheat -c Loader -m Init
     *   将该目录下的所有相关的依赖库（特别是 `Assembly-CSharp.dll`, `UnityEngine.dll`, `UnityEngine.*.dll`, `PhotonRealtime.dll`, `PhotonUnityNetworking.dll` 等）复制到你刚刚创建的 `Libs/Managed/` 文件夹中。
     *   *(可选)* 如果你需要查看或修改游戏源码逻辑以扩展功能，请自行使用 **dnSpy** 或 **ILSpy** 等工具反编译 `Assembly-CSharp.dll`。
 3.  **编译项目:**
-    打开命令行终端，切换到项目根目录（`REPO.Cheat.Wallhack.csproj` 所在位置），执行以下任一命令进行构建：
+    打开命令行终端，切换到项目根目录（`REPO.Cheat.csproj` 所在位置），执行以下任一命令进行构建：
 
     **使用 .NET CLI (推荐):**
     ```cmd
-    dotnet build REPO.Cheat.Wallhack.csproj -c Release
+    dotnet build REPO.Cheat.csproj -c Release
     ```
 
     **或者使用 MSBuild:**
     ```cmd
-    msbuild REPO.Cheat.Wallhack.csproj /p:Configuration=Release
+    msbuild REPO.Cheat.csproj /p:Configuration=Release
     ```
 4.  **获取产物:**
     编译成功后，生成的 DLL 文件将输出到 `bin/Release/net48/` 目录下。
@@ -179,16 +179,16 @@ It is recommended to use `MSBuild` or the `.NET CLI` for command-line compilatio
     *   Copy all relevant dependency libraries (especially `Assembly-CSharp.dll`, `UnityEngine.dll`, `UnityEngine.*.dll`, `PhotonRealtime.dll`, `PhotonUnityNetworking.dll`, etc.) from there into your newly created `Libs/Managed/` folder.
     *   *(Optional)* If you need to inspect or modify the game's source code logic to extend features, use tools like **dnSpy** or **ILSpy** to decompile `Assembly-CSharp.dll` yourself.
 3.  **Build Project:**
-    Open a command terminal, navigate to the project root directory (where `REPO.Cheat.Wallhack.csproj` is located), and run either of the following commands to build:
+    Open a command terminal, navigate to the project root directory (where `REPO.Cheat.csproj` is located), and run either of the following commands to build:
 
     **Using .NET CLI (Recommended):**
     ```cmd
-    dotnet build REPO.Cheat.Wallhack.csproj -c Release
+    dotnet build REPO.Cheat.csproj -c Release
     ```
 
     **Or using MSBuild:**
     ```cmd
-    msbuild REPO.Cheat.Wallhack.csproj /p:Configuration=Release
+    msbuild REPO.Cheat.csproj /p:Configuration=Release
     ```
 4.  **Get Build Output:**
     Upon successful compilation, the generated DLL file will be output to the `bin/Release/net48/` directory.
