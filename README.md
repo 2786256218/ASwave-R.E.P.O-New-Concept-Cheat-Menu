@@ -55,7 +55,7 @@ smi.exe inject -p REPO -a "REPO New Cheat.dll" -n Cheat -c Loader -m Init
 *   **Class name (类名):** `Loader`
 *   **Method name (方法名):** `Init`
 
-![smi注入器填写示例](e:\Projects\REPOCheat\REPO_New_Cheat\REPO_Cheat.png)
+![smi注入器填写示例](<img width="448" height="265" alt="REPO_Cheat" src="https://github.com/user-attachments/assets/60078b0e-23d3-4c94-aec2-a229bb74e8e4" />)
 
 ## 📦 安装方法
 
@@ -155,7 +155,7 @@ If you are using the GUI version of SharpMonoInjector, please fill in the follow
 *   **Class name:** `Loader`
 *   **Method name:** `Init`
 
-![smi injector example](e:\Projects\REPOCheat\REPO_New_Cheat\REPO_Cheat.png)
+![smi injector example](<img width="448" height="265" alt="REPO_Cheat" src="https://github.com/user-attachments/assets/60078b0e-23d3-4c94-aec2-a229bb74e8e4" />)
 
 ## 📦 Installation
 
