@@ -1,5 +1,5 @@
 <div align="center">
-  <a href="#chinese-version">🇨🇳 简体中文</a> | <a href="#english-version">🇬🇧 English</a>
+  <a href="#chinese-version">简体中文</a> | <a href="#english-version">English</a>
 </div>
 
 ---
