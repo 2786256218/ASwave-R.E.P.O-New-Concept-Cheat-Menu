@@ -5,7 +5,7 @@
 ---
 
 <a id="chinese-version"></a>
-# 🇨🇳 REPO New Cheat (中文版)
+# REPO New Cheat
 
 这是一个为游戏 **REPO** 编写的内部注入辅助（Cheat/Mod）。项目基于 Unity Engine 的 Mono 运行环境，并使用了 Photon (PUN) 进行网络同步相关的处理。它提供了丰富的透视、修改和游戏增强功能。
 
@@ -105,7 +105,7 @@ smi.exe inject -p REPO -a "REPO New Cheat.dll" -n Cheat -c Loader -m Init
 ---
 
 <a id="english-version"></a>
-# 🇬🇧 REPO New Cheat (English Version)
+# REPO New Cheat
 
 This is an internal injected cheat/mod written for the game **REPO**. The project is based on the Unity Engine's Mono runtime environment and uses Photon (PUN) for network synchronization handling. It provides a rich set of ESP, modification, and game enhancement features.
 
