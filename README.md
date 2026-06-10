@@ -67,21 +67,31 @@ smi.exe inject -p REPO -a "REPO New Cheat.dll" -n Cheat -c Loader -m Init
 
 ## 👨‍💻 面向开发者的构建方法
 
-本项目可以直接在 Visual Studio 或 Rider 中进行编译。
+本项目推荐使用 `MSBuild` 或 `.NET CLI` 进行命令行编译。
 
 1.  **前置依赖检查:**
-    *   确保已安装 **Visual Studio 2022** 或 **JetBrains Rider**。
-    *   安装 **.NET Framework 4.8 Developer Pack**。
-2.  **打开项目:**
-    双击打开 `REPO.Cheat.Wallhack.csproj`。
-3.  **准备游戏依赖项 (Libs):**
+    *   确保已安装 **.NET Framework 4.8 Developer Pack**。
+    *   确保系统中已安装 **MSBuild**（随 Visual Studio Build Tools 提供）或 **.NET CLI**。
+2.  **准备游戏依赖项 (Libs):**
     出于版权和仓库体积考虑，本项目**不包含**游戏原生的 DLL 文件。在编译前，你需要手动补充这些依赖：
     *   在项目根目录下创建一个名为 `Libs/Managed/` 的文件夹（如果不存在）。
     *   进入你的游戏安装目录 `REPO_Data/Managed/`。
     *   将该目录下的所有相关的依赖库（特别是 `Assembly-CSharp.dll`, `UnityEngine.dll`, `UnityEngine.*.dll`, `PhotonRealtime.dll`, `PhotonUnityNetworking.dll` 等）复制到你刚刚创建的 `Libs/Managed/` 文件夹中。
     *   *(可选)* 如果你需要查看或修改游戏源码逻辑以扩展功能，请自行使用 **dnSpy** 或 **ILSpy** 等工具反编译 `Assembly-CSharp.dll`。
-4.  **编译:**
-    在 IDE 中选择 `Release` 或 `Debug` 配置，然后点击生成 (Build)。编译后的 DLL 文件将输出到 `bin/Release/net48/` 或 `bin/Debug/net48/` 目录下。
+3.  **编译项目:**
+    打开命令行终端，切换到项目根目录（`REPO.Cheat.Wallhack.csproj` 所在位置），执行以下任一命令进行构建：
+
+    **使用 .NET CLI (推荐):**
+    ```cmd
+    dotnet build REPO.Cheat.Wallhack.csproj -c Release
+    ```
+
+    **或者使用 MSBuild:**
+    ```cmd
+    msbuild REPO.Cheat.Wallhack.csproj /p:Configuration=Release
+    ```
+4.  **获取产物:**
+    编译成功后，生成的 DLL 文件将输出到 `bin/Release/net48/` 目录下。
 
 ## ⚙️ 依赖环境
 
@@ -157,21 +167,31 @@ If you are using the GUI version of SharpMonoInjector, please fill in the follow
 
 ## 👨‍💻 Build Instructions
 
-This project can be compiled directly in Visual Studio or Rider.
+It is recommended to use `MSBuild` or the `.NET CLI` for command-line compilation.
 
 1.  **Prerequisites:**
-    *   Ensure **Visual Studio 2022** or **JetBrains Rider** is installed.
     *   Install **.NET Framework 4.8 Developer Pack**.
-2.  **Open Project:**
-    Double-click `REPO.Cheat.Wallhack.csproj` to open.
-3.  **Prepare Game Dependencies (Libs):**
+    *   Ensure **MSBuild** (provided with Visual Studio Build Tools) or **.NET CLI** is installed on your system.
+2.  **Prepare Game Dependencies (Libs):**
     For copyright and repository size reasons, this project **does not include** the native game DLL files. You need to manually add these dependencies before building:
     *   Create a folder named `Libs/Managed/` in the project root directory (if it doesn't exist).
     *   Navigate to your game installation directory `REPO_Data/Managed/`.
     *   Copy all relevant dependency libraries (especially `Assembly-CSharp.dll`, `UnityEngine.dll`, `UnityEngine.*.dll`, `PhotonRealtime.dll`, `PhotonUnityNetworking.dll`, etc.) from there into your newly created `Libs/Managed/` folder.
     *   *(Optional)* If you need to inspect or modify the game's source code logic to extend features, use tools like **dnSpy** or **ILSpy** to decompile `Assembly-CSharp.dll` yourself.
-4.  **Build:**
-    Select `Release` or `Debug` configuration in your IDE and click Build. The compiled DLL will be output to the `bin/Release/net48/` or `bin/Debug/net48/` directory.
+3.  **Build Project:**
+    Open a command terminal, navigate to the project root directory (where `REPO.Cheat.Wallhack.csproj` is located), and run either of the following commands to build:
+
+    **Using .NET CLI (Recommended):**
+    ```cmd
+    dotnet build REPO.Cheat.Wallhack.csproj -c Release
+    ```
+
+    **Or using MSBuild:**
+    ```cmd
+    msbuild REPO.Cheat.Wallhack.csproj /p:Configuration=Release
+    ```
+4.  **Get Build Output:**
+    Upon successful compilation, the generated DLL file will be output to the `bin/Release/net48/` directory.
 
 ## ⚙️ Dependencies
 
