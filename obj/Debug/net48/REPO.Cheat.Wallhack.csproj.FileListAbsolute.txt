@@ -1,7 +1,0 @@
-E:\Projects\REPOCheat\REPO_New_Cheat\bin\Debug\net48\REPO New Cheat.dll
-E:\Projects\REPOCheat\REPO_New_Cheat\obj\Debug\net48\REPO.Cheat.Wallhack.csproj.AssemblyReference.cache
-E:\Projects\REPOCheat\REPO_New_Cheat\obj\Debug\net48\REPO.Cheat.Wallhack.GeneratedMSBuildEditorConfig.editorconfig
-E:\Projects\REPOCheat\REPO_New_Cheat\obj\Debug\net48\REPO.Cheat.Wallhack.AssemblyInfoInputs.cache
-E:\Projects\REPOCheat\REPO_New_Cheat\obj\Debug\net48\REPO.Cheat.Wallhack.AssemblyInfo.cs
-E:\Projects\REPOCheat\REPO_New_Cheat\obj\Debug\net48\REPO.Cheat.Wallhack.csproj.CoreCompileInputs.cache
-E:\Projects\REPOCheat\REPO_New_Cheat\obj\Debug\net48\REPO New Cheat.dll
