@@ -17,17 +17,6 @@ internal static class NativeSpawnResolver
 
 	private static readonly MethodInfo ItemNameLocalizedMethod = typeof(ItemAttributes).GetMethod("GetItemNameLocalized", InstanceFlags);
 
-	private static readonly HashSet<string> ValuableListFieldNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-	{
-		"tinyValuables",
-		"smallValuables",
-		"mediumValuables",
-		"bigValuables",
-		"tallValuables",
-		"veryTallValuables",
-		"wideValuables"
-	};
-
 	private static readonly List<ItemSpawner.SpawnableItemDef> CachedValuableDefs = new List<ItemSpawner.SpawnableItemDef>();
 
 	private static readonly Dictionary<string, ItemSpawner.SpawnableItemDef> CachedValuableLookup = new Dictionary<string, ItemSpawner.SpawnableItemDef>(PathComparer);
@@ -112,12 +101,13 @@ internal static class NativeSpawnResolver
 		Dictionary<string, ItemSpawner.SpawnableItemDef> dictionary = new Dictionary<string, ItemSpawner.SpawnableItemDef>(PathComparer);
 		foreach (FieldInfo item in typeof(ValuableDirector).GetFields(InstanceFlags))
 		{
-			if (!ValuableListFieldNames.Contains(item.Name) || !typeof(List<PrefabRef>).IsAssignableFrom(item.FieldType))
+			if (!item.Name.EndsWith("Valuables", StringComparison.OrdinalIgnoreCase)
+				|| !typeof(IEnumerable<PrefabRef>).IsAssignableFrom(item.FieldType))
 			{
 				continue;
 			}
 			string text = item.Name.Substring(0, item.Name.Length - "Valuables".Length);
-			List<PrefabRef> list = item.GetValue(instance) as List<PrefabRef>;
+			IEnumerable<PrefabRef> list = item.GetValue(instance) as IEnumerable<PrefabRef>;
 			List<ValuableVolume> volumes = ReflectionUtils.GetFieldValue<List<ValuableVolume>>(instance, text + "Volumes") ?? new List<ValuableVolume>();
 			string valuablePath = ReflectionUtils.GetFieldValue<string>(instance, text + "Path");
 			if (list == null)
@@ -263,6 +253,12 @@ internal static class NativeSpawnResolver
 				}
 			}
 		}
+		// Item ScriptableObjects loaded by Resources/AssetBundles may not be in the
+		// current shop or spawned-item lists yet. Include them so new game updates
+		// appear in the picker without adding one-off resource paths.
+		Item[] loadedItems = Resources.FindObjectsOfTypeAll<Item>();
+		for (int i = 0; i < loadedItems.Length; i++)
+			TryAddItem(hashSet, loadedItems[i]);
 		return hashSet;
 	}
 
@@ -396,7 +392,9 @@ internal static class NativeSpawnResolver
 				Debug.LogError((object)"Failed to spawn native prefab in multiplayer: resource path is empty.");
 				return false;
 			}
-			PhotonNetwork.Instantiate(resourcePath, position, rotation, (byte)0, null);
+			// Game-owned shop items are spawned as room objects so the authoritative
+			// client creates the same network object type as the native shop flow.
+			PhotonNetwork.InstantiateRoomObject(resourcePath, position, rotation, (byte)0, null);
 			return true;
 		}
 		GameObject prefab = prefabRef.Prefab;

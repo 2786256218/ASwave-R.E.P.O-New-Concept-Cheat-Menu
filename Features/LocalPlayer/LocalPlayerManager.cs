@@ -5,8 +5,12 @@ using System.IO;
 using System.Net;
 using System.Reflection;
 using System.Text;
+using System.Threading;
 using Cheat.Config;
+using Cheat.Features.Enemies;
+using Cheat.Features.ItemSpawner;
 using Cheat.Features.Loot;
+using Cheat.Features.Teleport;
 using Photon.Pun;
 using UnityEngine;
 using UnityEngine.AI;
@@ -15,17 +19,26 @@ namespace Cheat.Features.LocalPlayer;
 
 public static class LocalPlayerManager
 {
-	private const int LootTeleportModeValuables = 0;
+        private const string DebugEnvPath = ".dbg\\global-stutter-aimbot.env";
 
-	private const int LootTeleportModeDoors = 1;
+        private const string DebugEnvPathFallback = "e:\\Projects\\REPOCheat\\REPO_New_Cheat\\.dbg\\global-stutter-aimbot.env";
 
-	private const string DebugEnvPath = ".dbg\\home-teleport-noop.env";
-
-	private const string DebugSessionId = "home-teleport-noop";
+        private const string DebugSessionId = "global-stutter-aimbot";
 
 	private const string DebugRunId = "pre-fix";
 
 	private const double DebugConfigRefreshIntervalSeconds = 5.0;
+	private const float NetHandlerRefreshIntervalSeconds = 3f;
+	private const float ItemSpawnRequestCooldownSeconds = 0.35f;
+	private const float AimbotScanIntervalSeconds = 0.02f;
+	private const float AimbotAssistGraceSeconds = 0.12f;
+	private const float AimbotPullHoldSeconds = 0.08f;
+	// ItemGun.aimVerticalOffset is negative when the barrel points up; the stock
+	// value is -5 (standing) / -1 (crouching). Both are lowered by ~1.5 degrees
+	// here because the held muzzle sat visibly too high.
+	private const float StandAimVerticalOffset = -3.5f;
+	private const float CrouchAimVerticalOffset = 0.5f;
+	private const double DebugReportMinimumIntervalSeconds = 0.1;
 
 	private const float HomeStoredSpawnMatchDistance = 2.5f;
 
@@ -33,10 +46,33 @@ public static class LocalPlayerManager
 
 	private sealed class LocalPlayerNetHandler : MonoBehaviourPun
 	{
+		private float _nextItemSpawnRequestTime;
+		private float _nextGrabStrengthRequestTime;
+		private bool _grabStrengthBaselineCaptured;
+		private float _originalRemoteForceMax;
+		private float _originalRemoteForceConstant;
+
+		public bool RequestSpawnItem(string resourcePath, Vector3 position, Quaternion rotation)
+		{
+			if ((UnityEngine.Object)(object)photonView == (UnityEngine.Object)null || !photonView.IsMine || string.IsNullOrWhiteSpace(resourcePath))
+			{
+				return false;
+			}
+
+			photonView.RPC("RequestSpawnItemRPC", RpcTarget.MasterClient, resourcePath, position, rotation);
+			return true;
+		}
+
 		public bool RequestSpawn(Vector3 position, Quaternion rotation)
 		{
+			#region debug-point A:request-spawn-entry
+			DebugReport("A", "LocalPlayerManager.RequestSpawn", "准备发送玩家传送请求", "handler=" + ((UnityEngine.Object)(object)this).name + ",hasPhotonView=" + ((UnityEngine.Object)(object)photonView != (UnityEngine.Object)null) + ",isMine=" + (((UnityEngine.Object)(object)photonView != (UnityEngine.Object)null) ? photonView.IsMine.ToString() : "false") + ",position=" + position + ",rotationY=" + rotation.eulerAngles.y);
+			#endregion
 			if ((UnityEngine.Object)(object)photonView == (UnityEngine.Object)null || !photonView.IsMine)
 			{
+				#region debug-point E:request-spawn-rejected
+				DebugReport("E", "LocalPlayerManager.RequestSpawn", "玩家传送请求发送被拒绝", "reason=no-photon-view-or-not-mine,handler=" + ((UnityEngine.Object)(object)this).name);
+				#endregion
 				return false;
 			}
 
@@ -44,26 +80,34 @@ public static class LocalPlayerManager
 			return true;
 		}
 
-		public bool RequestTeleportEnemyToPlayer(int enemyViewId)
+		[PunRPC]
+		private void RequestSpawnItemRPC(string resourcePath, Vector3 position, Quaternion rotation, PhotonMessageInfo info = default(PhotonMessageInfo))
 		{
-			if ((UnityEngine.Object)(object)photonView == (UnityEngine.Object)null || !photonView.IsMine || enemyViewId <= 0)
+			if (!PhotonNetwork.IsMasterClient || string.IsNullOrWhiteSpace(resourcePath)
+				|| info.Sender == null || info.Sender.ActorNumber != photonView.OwnerActorNr
+				|| !IsFinite(position))
 			{
-				return false;
+				return;
 			}
 
-			photonView.RPC("RequestTeleportEnemyToPlayerRPC", RpcTarget.MasterClient, enemyViewId);
-			return true;
-		}
-
-		public bool RequestLootTeleport(Vector3 targetCenter, int mode)
-		{
-			if ((UnityEngine.Object)(object)photonView == (UnityEngine.Object)null || !photonView.IsMine)
+			PlayerAvatar avatar = ((Component)this).GetComponent<PlayerAvatar>();
+			if ((UnityEngine.Object)(object)avatar == (UnityEngine.Object)null)
 			{
-				return false;
+				return;
 			}
 
-			photonView.RPC("RequestLootTeleportRPC", RpcTarget.MasterClient, targetCenter, mode);
-			return true;
+			float now = Time.unscaledTime;
+			if ((_nextItemSpawnRequestTime > 0f && now < _nextItemSpawnRequestTime) || Vector3.Distance(avatar.transform.position, position) > 25f)
+			{
+				return;
+			}
+			_nextItemSpawnRequestTime = now + ItemSpawnRequestCooldownSeconds;
+
+			Cheat.Features.ItemSpawner.ItemSpawner spawner = Cheat.Features.ItemSpawner.ItemSpawner.Instance;
+			if ((UnityEngine.Object)(object)spawner == (UnityEngine.Object)null || !spawner.TrySpawnRequestedItem(resourcePath, position, rotation))
+			{
+				UnityEngine.Debug.LogWarning((object)("Host rejected client item spawn request: " + resourcePath));
+			}
 		}
 
 		public bool RequestLooseItemProtection()
@@ -75,6 +119,56 @@ public static class LocalPlayerManager
 
 			photonView.RPC("RequestLooseItemProtectionRPC", RpcTarget.MasterClient);
 			return true;
+		}
+
+		public bool RequestGrabStrengthMultiplier(float multiplier)
+		{
+			if ((UnityEngine.Object)(object)photonView == (UnityEngine.Object)null || !photonView.IsMine
+				|| float.IsNaN(multiplier) || float.IsInfinity(multiplier))
+			{
+				return false;
+			}
+
+			photonView.RPC("RequestGrabStrengthMultiplierRPC", RpcTarget.MasterClient, Mathf.Clamp(multiplier, 1f, MaxStableGrabStrengthMultiplier));
+			return true;
+		}
+
+		[PunRPC]
+		private void RequestGrabStrengthMultiplierRPC(float multiplier, PhotonMessageInfo info = default(PhotonMessageInfo))
+		{
+			if (!PhotonNetwork.IsMasterClient || info.Sender == null
+				|| info.Sender.ActorNumber != photonView.OwnerActorNr
+				|| float.IsNaN(multiplier) || float.IsInfinity(multiplier))
+			{
+				return;
+			}
+
+			float now = Time.unscaledTime;
+			multiplier = Mathf.Clamp(multiplier, 1f, MaxStableGrabStrengthMultiplier);
+			if (now < _nextGrabStrengthRequestTime && multiplier > 1.001f)
+			{
+				return;
+			}
+			_nextGrabStrengthRequestTime = now + 0.18f;
+
+			PlayerAvatar avatar = ((Component)this).GetComponent<PlayerAvatar>();
+			PhysGrabber grabber = avatar != null ? avatar.physGrabber : null;
+			if ((UnityEngine.Object)(object)grabber == (UnityEngine.Object)null)
+			{
+				return;
+			}
+
+			if (!_grabStrengthBaselineCaptured)
+			{
+				_originalRemoteForceMax = grabber.forceMax;
+				_originalRemoteForceConstant = grabber.forceConstant;
+				_grabStrengthBaselineCaptured = true;
+			}
+
+			grabber.forceMax = _originalRemoteForceMax * multiplier;
+			grabber.forceConstant = _originalRemoteForceConstant * multiplier;
+			float baseGrabStrength = ReflectionUtils.GetFieldValue<float>(grabber, "grabStrength");
+			grabber.OverrideGrabStrength(baseGrabStrength * multiplier, 0.35f);
 		}
 
 		[PunRPC]
@@ -97,69 +191,6 @@ public static class LocalPlayerManager
 				#endregion
 				ExecuteAuthoritativePlayerTeleport(component, vector, rotation, "RequestSpawnRPC");
 			}
-		}
-
-		[PunRPC]
-		private void RequestTeleportEnemyToPlayerRPC(int enemyViewId, PhotonMessageInfo _info = default(PhotonMessageInfo))
-		{
-			#region debug-point B:request-enemy-teleport-rpc
-			DebugReport("B", "LocalPlayerManager.RequestTeleportEnemyToPlayerRPC", "收到怪物拉人身边请求", "isMaster=" + PhotonNetwork.IsMasterClient + ",enemyViewId=" + enemyViewId);
-			#endregion
-			if (!PhotonNetwork.IsMasterClient || enemyViewId <= 0)
-			{
-				return;
-			}
-
-			PlayerAvatar component = ((Component)this).GetComponent<PlayerAvatar>();
-			if ((UnityEngine.Object)(object)component == (UnityEngine.Object)null)
-			{
-				return;
-			}
-
-			PhotonView val = PhotonView.Find(enemyViewId);
-			if ((UnityEngine.Object)(object)val == (UnityEngine.Object)null)
-			{
-				return;
-			}
-
-			Enemy component2 = ((Component)val).GetComponent<Enemy>();
-			if ((UnityEngine.Object)(object)component2 == (UnityEngine.Object)null)
-			{
-				component2 = ((Component)val).GetComponentInChildren<Enemy>(true);
-			}
-			if ((UnityEngine.Object)(object)component2 == (UnityEngine.Object)null)
-			{
-				component2 = ((Component)val).GetComponentInParent<Enemy>();
-			}
-			if ((UnityEngine.Object)(object)component2 == (UnityEngine.Object)null)
-			{
-				return;
-			}
-
-			Transform transform = ((Component)component).transform;
-			Vector3 destination = ResolveEnemyPullDestination(component, transform);
-			#region debug-point A:enemy-teleport-destination
-			DebugReport("A", "LocalPlayerManager.RequestTeleportEnemyToPlayerRPC", "主机准备拉怪到玩家身边", "enemy=" + ((UnityEngine.Object)(object)component2).name + ",player=" + transform.position + ",destination=" + destination);
-			#endregion
-			ExecuteAuthoritativeEnemyTeleport(component2, destination);
-		}
-
-		[PunRPC]
-		private void RequestLootTeleportRPC(Vector3 targetCenter, int mode, PhotonMessageInfo _info = default(PhotonMessageInfo))
-		{
-			if (!PhotonNetwork.IsMasterClient)
-			{
-				return;
-			}
-
-			PlayerAvatar component = ((Component)this).GetComponent<PlayerAvatar>();
-			if ((UnityEngine.Object)(object)component == (UnityEngine.Object)null)
-			{
-				return;
-			}
-
-			int executeMode = mode == LootTeleportModeDoors ? LootTeleportModeDoors : LootTeleportModeValuables;
-			LootTeleporter.ExecuteTeleport(executeMode, targetCenter, ((Component)component).transform, component);
 		}
 
 		[PunRPC]
@@ -203,6 +234,9 @@ public static class LocalPlayerManager
 	private static float _originalFOV = -1f;
 
 	private static FieldInfo _godModeField;
+	private static bool _temporaryHealthLock;
+	private static float _temporaryGrabStrengthMultiplier = 1f;
+	private static float _temporaryGrabReach;
 
 	private static FieldInfo _energyCurrentField;
 
@@ -242,13 +276,23 @@ public static class LocalPlayerManager
 
 	private static MethodInfo _physGrabObjectOverrideMinGrabStrengthMethod;
 
+	private static MethodInfo _physGrabObjectOverrideMassMethod;
+	private static MethodInfo _physGrabObjectOverrideTorqueStrengthMethod;
+	private static MethodInfo _physGrabObjectOverrideDragMethod;
+
 	private static bool _noClipActive = false;
 
-	private static Collider _playerCollider;
+	private static Collider[] _playerColliders;
 
 	private static MonoBehaviour _playerCollision;
 
 	private static Rigidbody _playerRigidbody;
+	private static Rigidbody _playerAvatarRigidbody;
+	private static NoClipHoverGuard _noClipHoverGuard;
+	private static bool _originalAvatarRigidbodyUseGravity;
+	private static bool _originalAvatarRigidbodyKinematic;
+	private static float _originalAvatarRigidbodyDrag;
+	private static bool _avatarRigidbodyStateCaptured;
 
 	private static bool _originalGravityUseGravity;
 
@@ -280,6 +324,10 @@ public static class LocalPlayerManager
 
 	private static float _nextBatteryRefreshTime;
 
+	private static float _nextGrabStrengthNetworkSyncTime;
+
+	private static float _lastGrabStrengthNetworkMultiplier = -1f;
+
 	private static float _nextNetHandlerRefreshTime;
 
 	private static bool _debugConfigLoaded;
@@ -294,15 +342,20 @@ public static class LocalPlayerManager
 
 	private static DateTime _nextDebugConfigRefreshUtc = DateTime.MinValue;
 
-	private static int _pendingHomeTeleportDebugFrames;
-
 	private static Vector3 _pendingHomeTeleportTarget;
 
 	private static Quaternion _pendingHomeTeleportRotation = Quaternion.identity;
 
 	private static string _pendingHomeTeleportSource = string.Empty;
 
-	public static string LastActionStatus { get; private set; } = string.Empty;
+	private static PlayerAvatar _cachedLocalAvatar;
+	private static float _cachedLocalAvatarTime;
+	private static float _nextItemInvincibilityTime;
+	private static float _nextStationHealTime;
+	private static float _lastEnemyActionAmount;
+	private static int _lastEnemyDirectorInstanceId;
+
+	public static string LastActionStatus { get; set; } = string.Empty;
 
 	public static PlayerController LocalPlayer => PlayerController.instance;
 
@@ -312,58 +365,88 @@ public static class LocalPlayerManager
 		return _debugReportEnabled;
 	}
 
+	private static float _homeTeleportNoTumbleTimer = 0f;
+
+
+
+	private static float _aimbotAssistUntilTime = 0f;
+	private static float _nextAimbotScanTime = 0f;
+	private static float _aimbotPullHoldUntilTime = 0f;
+
+	private static Vector3 _aimbotTargetPoint = Vector3.zero;
+
+	private static Enemy _aimbotTarget;
+	private static int _debugReportInFlight;
+	private static long _lastDebugReportTicks;
+
+		public static float GetAimbotReferenceFov()
+		{
+			if (_originalFOV > 1f)
+			{
+				return _originalFOV;
+			}
+
+			if ((UnityEngine.Object)(object)Camera.main != (UnityEngine.Object)null)
+			{
+				return Camera.main.fieldOfView;
+			}
+
+			return 60f;
+		}
+
+	public static void FixedUpdate()
+	{
+		if (ConfigManager.Config == null)
+		{
+			return;
+		}
+
+		PhysGrabObject currentlyGrabbedObject = GetCurrentlyGrabbedObject();
+		if (currentlyGrabbedObject == null)
+		{
+			return;
+		}
+
+		if (_aimbotAssistUntilTime > Time.unscaledTime)
+		{
+			ApplySolidAim(currentlyGrabbedObject, true, _aimbotTargetPoint);
+			return;
+		}
+
+	}
+
 	public static void Update()
 	{
 		if (!((UnityEngine.Object)(object)PlayerController.instance == (UnityEngine.Object)null))
 		{
-			bool flag = IsRuntimeDebugEnabled();
-			long num = flag ? Stopwatch.GetTimestamp() : 0L;
-			double num2 = 0.0;
-			bool flag2 = false;
+			if (_homeTeleportNoTumbleTimer > 0f)
+			{
+				_homeTeleportNoTumbleTimer -= Time.deltaTime;
+				PlayerAvatar avatar = ResolveLocalPlayerAvatar();
+				PlayerTumble tumble = GetPlayerTumble(avatar);
+				if ((UnityEngine.Object)(object)tumble != (UnityEngine.Object)null && ReflectionUtils.GetFieldValue<bool>(tumble, "isTumbling"))
+				{
+					tumble.TumbleSet(false, false);
+				}
+			}
+
 			if (!_initialized)
 			{
 				Initialize();
 			}
-			if (Time.unscaledTime >= _nextNetHandlerRefreshTime)
-			{
-				flag2 = true;
-				long num4 = flag ? Stopwatch.GetTimestamp() : 0L;
-				EnsureNetHandlers();
-				if (flag)
-				{
-					num2 = GetElapsedMilliseconds(num4);
-				}
-				_nextNetHandlerRefreshTime = Time.unscaledTime + 1.5f;
-			}
+			
 			ApplyGodMode();
 			ApplyInfiniteStamina();
 			ApplyInfiniteBattery();
 			ApplyNoClip();
-			ApplyNoRagdoll();
+			UpdateAimbotState();
 			ApplySpeedModifiers();
 			ApplyGrabModifiers();
 			ApplyJumpModifiers();
 			ApplyGravityModifiers();
 			ApplyFOV();
-			if (flag)
-			{
-				double elapsedMilliseconds = GetElapsedMilliseconds(num);
-				if (elapsedMilliseconds >= 3.0 || num2 >= 2.0)
-				{
-					#region debug-point A:local-player-update-cost
-					DebugReport("A", "LocalPlayerManager.Update", "本地玩家模块出现可见耗时", "totalMs=" + elapsedMilliseconds.ToString("F2") + ",ranNetHandlers=" + flag2 + ",netMs=" + num2.ToString("F2"));
-					#endregion
-				}
-			}
-			if (_pendingHomeTeleportDebugFrames > 0)
-			{
-				_pendingHomeTeleportDebugFrames--;
-				PlayerAvatar localPlayerAvatar = ResolveLocalPlayerAvatar();
-				PlayerController instance = PlayerController.instance;
-				#region debug-point H4:home-teleport-post-frames
-				DebugReport("H4", "LocalPlayerManager.Update", "观察回家传送后的对象状态", "framesLeft=" + _pendingHomeTeleportDebugFrames + ",target=" + _pendingHomeTeleportTarget + ",targetRotationY=" + _pendingHomeTeleportRotation.eulerAngles.y + ",source=" + (_pendingHomeTeleportSource ?? string.Empty) + ",avatar=" + DescribePlayerAvatar(localPlayerAvatar) + ",avatarPos=" + GetTransformPosition(localPlayerAvatar) + ",controllerPos=" + GetTransformPosition(instance) + ",rbPos=" + GetRigidbodyPosition(instance) + ",controllerAvatar=" + DescribePlayerAvatar((instance != null) ? instance.playerAvatarScript : null));
-				#endregion
-			}
+			ApplyThirdPerson();
+			ApplyTumbleFly();
 		}
 	}
 
@@ -408,11 +491,7 @@ public static class LocalPlayerManager
 				_originalEnergyMax = PlayerController.instance.EnergyStart;
 				_originalJumpForce = PlayerController.instance.JumpForce;
 				_originalGravity = PlayerController.instance.CustomGravity;
-				_playerCollider = ((Component)PlayerController.instance).GetComponent<Collider>();
-				if ((UnityEngine.Object)(object)_playerCollider == (UnityEngine.Object)null)
-				{
-					_playerCollider = ((Component)PlayerController.instance).GetComponentInChildren<Collider>();
-				}
+				_playerColliders = ((Component)PlayerController.instance).GetComponentsInChildren<Collider>(true);
 				_playerCollision = (MonoBehaviour)((Component)PlayerController.instance).GetComponent("PlayerCollision");
 				if (_playerCollision == null && PlayerController.instance != null)
 				{
@@ -453,6 +532,8 @@ public static class LocalPlayerManager
 
 	private static void EnsureNetHandlers()
 	{
+                bool runtimeDebugEnabled = IsRuntimeDebugEnabled();
+                long startTimestamp = runtimeDebugEnabled ? Stopwatch.GetTimestamp() : 0L;
 		PlayerAvatar[] array = UnityEngine.Object.FindObjectsByType<PlayerAvatar>((FindObjectsSortMode)0);
 		for (int i = 0; i < array.Length; i++)
 		{
@@ -462,6 +543,16 @@ public static class LocalPlayerManager
 				((Component)val).gameObject.AddComponent<LocalPlayerNetHandler>();
 			}
 		}
+                if (runtimeDebugEnabled)
+                {
+                        double elapsedMilliseconds = GetElapsedMilliseconds(startTimestamp);
+                        if (elapsedMilliseconds >= 1.5)
+                        {
+                                #region debug-point B:local-ensure-net-handlers-spike
+                                DebugReport("B", "LocalPlayerManager.EnsureNetHandlers", "本地网络处理器刷新耗时偏高", "elapsedMs=" + elapsedMilliseconds.ToString("F2") + ",avatarCount=" + array.Length);
+                                #endregion
+                        }
+                }
 	}
 
 	private static bool ResolveHomeDestination(out Vector3 position, out Quaternion rotation, out string description)
@@ -631,12 +722,24 @@ public static class LocalPlayerManager
 		PlayerHealth playerHealth = PlayerAvatar.instance.playerHealth;
 		if (!((UnityEngine.Object)(object)playerHealth == (UnityEngine.Object)null) && !(_godModeField == null))
 		{
+			bool shouldLockHealth = ConfigManager.Config.Local.GodMode || _temporaryHealthLock;
 			bool flag = (bool)_godModeField.GetValue(playerHealth);
-			if (flag != ConfigManager.Config.Local.GodMode)
+			if (flag != shouldLockHealth)
 			{
-				_godModeField.SetValue(playerHealth, ConfigManager.Config.Local.GodMode);
+				_godModeField.SetValue(playerHealth, shouldLockHealth);
 			}
 		}
+	}
+
+	/// <summary>Temporarily preserves local health during the game's native health-sharing interaction.</summary>
+	public static void SetTemporaryHealthLock(bool enabled)
+	{
+		_temporaryHealthLock = enabled;
+		if (_godModeField == null)
+		{
+			_godModeField = typeof(PlayerHealth).GetField("godMode", BindingFlags.Instance | BindingFlags.NonPublic);
+		}
+		ApplyGodMode();
 	}
 
 	private static void ApplyInfiniteStamina()
@@ -648,6 +751,32 @@ public static class LocalPlayerManager
 		}
 	}
 
+	/// <summary>Reasserts zero gravity and a stationary physics state after the game's own player update.</summary>
+	public static void EnforceNoClipHover()
+	{
+		if (!_noClipActive || (UnityEngine.Object)(object)PlayerController.instance == (UnityEngine.Object)null)
+			return;
+
+		PlayerController.instance.CustomGravity = 0f;
+		PlayerController.instance.VelocityRelative = Vector3.zero;
+		Rigidbody controllerBody = _playerRigidbody != null ? _playerRigidbody : PlayerController.instance.rb;
+		if ((UnityEngine.Object)(object)controllerBody != (UnityEngine.Object)null)
+		{
+			controllerBody.isKinematic = true;
+			controllerBody.useGravity = false;
+			controllerBody.velocity = Vector3.zero;
+			controllerBody.angularVelocity = Vector3.zero;
+		}
+		if ((UnityEngine.Object)(object)_playerAvatarRigidbody != (UnityEngine.Object)null)
+		{
+			_playerAvatarRigidbody.isKinematic = true;
+			_playerAvatarRigidbody.useGravity = false;
+			_playerAvatarRigidbody.velocity = Vector3.zero;
+			_playerAvatarRigidbody.angularVelocity = Vector3.zero;
+		}
+	}
+
+	/// <summary>Enables collision-free movement and restores original physics when the feature is disabled.</summary>
 	private static void ApplyNoClip()
 	{
 		if ((UnityEngine.Object)(object)PlayerController.instance == (UnityEngine.Object)null)
@@ -657,9 +786,20 @@ public static class LocalPlayerManager
 		bool noClip = ConfigManager.Config.Local.NoClip;
 		if (noClip && !_noClipActive)
 		{
-			if ((UnityEngine.Object)(object)_playerCollider != (UnityEngine.Object)null)
+			if (_playerColliders != null)
 			{
-				_playerCollider.enabled = false;
+				foreach (var col in _playerColliders)
+				{
+					if (col != null) col.enabled = false;
+				}
+			}
+			PlayerAvatar localAvatar = ResolveLocalPlayerAvatar();
+			if (localAvatar != null)
+			{
+				foreach (var col in localAvatar.GetComponentsInChildren<Collider>(true))
+				{
+					if (col != null) col.enabled = false;
+				}
 			}
 			if ((UnityEngine.Object)(object)_playerCollision != (UnityEngine.Object)null)
 			{
@@ -675,18 +815,49 @@ public static class LocalPlayerManager
 				_playerRigidbody.useGravity = false;
 				_playerRigidbody.drag = 0f;
 				_playerRigidbody.isKinematic = true;
-				_playerRigidbody.collisionDetectionMode = CollisionDetectionMode.Discrete;
 				_playerRigidbody.velocity = Vector3.zero;
 				_playerRigidbody.angularVelocity = Vector3.zero;
 			}
+			PlayerAvatar avatarForPhysics = ResolveLocalPlayerAvatar();
+			_playerAvatarRigidbody = (UnityEngine.Object)(object)avatarForPhysics != (UnityEngine.Object)null
+				? ReflectionUtils.GetFieldValue<Rigidbody>(avatarForPhysics, "rb")
+				: null;
+			if ((UnityEngine.Object)(object)_playerAvatarRigidbody != (UnityEngine.Object)null
+				&& (UnityEngine.Object)(object)_playerAvatarRigidbody != (UnityEngine.Object)(object)_playerRigidbody)
+			{
+				_originalAvatarRigidbodyUseGravity = _playerAvatarRigidbody.useGravity;
+				_originalAvatarRigidbodyKinematic = _playerAvatarRigidbody.isKinematic;
+				_originalAvatarRigidbodyDrag = _playerAvatarRigidbody.drag;
+				_avatarRigidbodyStateCaptured = true;
+			}
+			else
+			{
+				_playerAvatarRigidbody = null;
+				_avatarRigidbodyStateCaptured = false;
+			}
 			_noClipActive = true;
-			Console.WriteLine("[LocalPlayer] NoClip ENABLED - Others will see you desync!");
+			GameObject controllerObject = ((Component)PlayerController.instance).gameObject;
+			_noClipHoverGuard = controllerObject.GetComponent<NoClipHoverGuard>();
+			if ((UnityEngine.Object)(object)_noClipHoverGuard == (UnityEngine.Object)null)
+				_noClipHoverGuard = controllerObject.AddComponent<NoClipHoverGuard>();
+			Console.WriteLine("[LocalPlayer] NoClip ENABLED");
 		}
 		else if (!noClip && _noClipActive)
 		{
-			if ((UnityEngine.Object)(object)_playerCollider != (UnityEngine.Object)null)
+			if (_playerColliders != null)
 			{
-				_playerCollider.enabled = true;
+				foreach (var col in _playerColliders)
+				{
+					if (col != null) col.enabled = true;
+				}
+			}
+			PlayerAvatar localAvatar = ResolveLocalPlayerAvatar();
+			if (localAvatar != null)
+			{
+				foreach (var col in localAvatar.GetComponentsInChildren<Collider>(true))
+				{
+					if (col != null) col.enabled = true;
+				}
 			}
 			if ((UnityEngine.Object)(object)_playerCollision != (UnityEngine.Object)null)
 			{
@@ -703,6 +874,16 @@ public static class LocalPlayerManager
 				_playerRigidbody.velocity = Vector3.zero;
 				_playerRigidbody.angularVelocity = Vector3.zero;
 			}
+			if (_avatarRigidbodyStateCaptured && (UnityEngine.Object)(object)_playerAvatarRigidbody != (UnityEngine.Object)null)
+			{
+				_playerAvatarRigidbody.useGravity = _originalAvatarRigidbodyUseGravity;
+				_playerAvatarRigidbody.drag = _originalAvatarRigidbodyDrag;
+				_playerAvatarRigidbody.isKinematic = _originalAvatarRigidbodyKinematic;
+				_playerAvatarRigidbody.velocity = Vector3.zero;
+				_playerAvatarRigidbody.angularVelocity = Vector3.zero;
+			}
+			_playerAvatarRigidbody = null;
+			_avatarRigidbodyStateCaptured = false;
 			_noClipActive = false;
 			Console.WriteLine("[LocalPlayer] NoClip DISABLED");
 		}
@@ -711,33 +892,25 @@ public static class LocalPlayerManager
 			return;
 		}
 
+		// Keep both controller and avatar physics pinned while noclip is active, including when no key is held.
 		PlayerController.instance.CustomGravity = 0f;
-		PlayerController.instance.AntiGravity(0.25f);
-		PlayerController.instance.DebugNoTumble = true;
-		PlayerController.instance.Velocity = Vector3.zero;
-		if ((UnityEngine.Object)(object)PlayerController.instance.CollisionController != (UnityEngine.Object)null)
-		{
-			PlayerController.instance.CollisionController.GroundedDisableTimer = 0.25f;
-			PlayerController.instance.CollisionController.OverrideDisableFallLoop(0.25f);
-			PlayerController.instance.CollisionController.ResetFalling();
-		}
-		PlayerTumble playerTumble = GetPlayerTumble();
-		if ((UnityEngine.Object)(object)playerTumble != (UnityEngine.Object)null && ReflectionUtils.GetFieldValue<bool>(playerTumble, "isTumbling"))
-		{
-			playerTumble.TumbleSet(_isTumbling: false, _playerInput: false);
-			playerTumble.DisableCustomGravity(0.25f);
-			Rigidbody fieldValue = ReflectionUtils.GetFieldValue<Rigidbody>(playerTumble, "rb");
-			if ((UnityEngine.Object)(object)fieldValue != (UnityEngine.Object)null)
-			{
-				fieldValue.velocity = Vector3.zero;
-				fieldValue.angularVelocity = Vector3.zero;
-			}
-		}
+		PlayerController.instance.VelocityRelative = Vector3.zero;
+
 		if ((UnityEngine.Object)(object)_playerRigidbody != (UnityEngine.Object)null)
 		{
+			_playerRigidbody.isKinematic = true;
+			_playerRigidbody.useGravity = false;
 			_playerRigidbody.velocity = Vector3.zero;
 			_playerRigidbody.angularVelocity = Vector3.zero;
 		}
+		if ((UnityEngine.Object)(object)_playerAvatarRigidbody != (UnityEngine.Object)null)
+		{
+			_playerAvatarRigidbody.isKinematic = true;
+			_playerAvatarRigidbody.useGravity = false;
+			_playerAvatarRigidbody.velocity = Vector3.zero;
+			_playerAvatarRigidbody.angularVelocity = Vector3.zero;
+		}
+
 		float num = ConfigManager.Config.Local.NoClipSpeed;
 		if (Input.GetKey((KeyCode)304))
 		{
@@ -747,88 +920,62 @@ public static class LocalPlayerManager
 		Camera main = Camera.main;
 		if ((UnityEngine.Object)(object)main != (UnityEngine.Object)null)
 		{
-			Vector3 normalized = Vector3.ProjectOnPlane(((Component)main).transform.forward, Vector3.up).normalized;
-			Vector3 normalized2 = Vector3.ProjectOnPlane(((Component)main).transform.right, Vector3.up).normalized;
-			if (Input.GetKey((KeyCode)119))
+			Vector3 forward = Vector3.ProjectOnPlane(((Component)main).transform.forward, Vector3.up).normalized;
+			Vector3 right = Vector3.ProjectOnPlane(((Component)main).transform.right, Vector3.up).normalized;
+			if (Input.GetKey(KeyCode.W))
 			{
-				val += normalized;
+				val += forward;
 			}
-			if (Input.GetKey((KeyCode)115))
+			if (Input.GetKey(KeyCode.S))
 			{
-				val -= normalized;
+				val -= forward;
 			}
-			if (Input.GetKey((KeyCode)97))
+			if (Input.GetKey(KeyCode.A))
 			{
-				val -= normalized2;
+				val -= right;
 			}
-			if (Input.GetKey((KeyCode)100))
+			if (Input.GetKey(KeyCode.D))
 			{
-				val += normalized2;
+				val += right;
 			}
-			if (Input.GetKey((KeyCode)32))
+			if (Input.GetKey(KeyCode.Space))
 			{
 				val += Vector3.up;
 			}
-			if (Input.GetKey((KeyCode)306))
+			if (Input.GetKey(KeyCode.LeftControl))
 			{
 				val -= Vector3.up;
 			}
 		}
-		if (val != Vector3.zero)
+
+		if (val.sqrMagnitude > 0.001f)
 		{
-			Vector3 position = ((Component)PlayerController.instance).transform.position + val.normalized * num * Time.unscaledDeltaTime;
+			Vector3 position = ((Component)PlayerController.instance).transform.position;
+			position += val.normalized * num * Time.deltaTime;
+			((Component)PlayerController.instance).transform.position = position;
+			
 			if ((UnityEngine.Object)(object)_playerRigidbody != (UnityEngine.Object)null)
 			{
-				_playerRigidbody.MovePosition(position);
+				_playerRigidbody.position = position;
 			}
-			else
+
+			if (!SemiFunc.IsMasterClientOrSingleplayer())
 			{
-				((Component)PlayerController.instance).transform.position = position;
+				PlayerAvatar localAvatar = ResolveLocalPlayerAvatar();
+				if ((UnityEngine.Object)(object)localAvatar != (UnityEngine.Object)null)
+				{
+					Rigidbody avatarRb = ReflectionUtils.GetFieldValue<Rigidbody>(localAvatar, "rb");
+					if (avatarRb != null)
+					{
+						avatarRb.isKinematic = true;
+						avatarRb.position = position;
+					}
+					localAvatar.transform.position = position;
+				}
 			}
-		}
-		if ((UnityEngine.Object)(object)_playerRigidbody != (UnityEngine.Object)null)
-		{
-			_playerRigidbody.velocity = Vector3.zero;
-			_playerRigidbody.angularVelocity = Vector3.zero;
 		}
 	}
 
-	private static void ApplyNoRagdoll()
-	{
-		if ((UnityEngine.Object)(object)PlayerAvatar.instance == (UnityEngine.Object)null || _tumbleField == null)
-		{
-			return;
-		}
-		if (!ConfigManager.Config.Local.NoRagdoll)
-		{
-			if (!_noClipActive && !((UnityEngine.Object)(object)PlayerController.instance == (UnityEngine.Object)null))
-			{
-				PlayerController.instance.DebugNoTumble = false;
-			}
-			return;
-		}
-		try
-		{
-			object tumbleObj = _tumbleField.GetValue(PlayerAvatar.instance);
-			if (tumbleObj == null)
-			{
-				return;
-			}
-
-			PlayerController.instance.DebugNoTumble = true;
-			MethodInfo disableCustomGravityMethod = tumbleObj.GetType().GetMethod("DisableCustomGravity", BindingFlags.Instance | BindingFlags.Public);
-			disableCustomGravityMethod?.Invoke(tumbleObj, new object[1] { 0.25f });
-			FieldInfo field = tumbleObj.GetType().GetField("isTumbling", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-			if (field != null && (bool)field.GetValue(tumbleObj))
-			{
-				MethodInfo method = tumbleObj.GetType().GetMethod("TumbleSet", BindingFlags.Instance | BindingFlags.Public);
-				method?.Invoke(tumbleObj, new object[2] { false, false });
-			}
-		}
-		catch
-		{
-		}
-	}
 
 	private static PlayerTumble GetPlayerTumble()
 	{
@@ -870,6 +1017,140 @@ public static class LocalPlayerManager
 		}
 	}
 
+	private static void ApplyGlobalItemInvincibility()
+	{
+		if (ConfigManager.Config.Misc.GlobalItemInvincibility && Time.unscaledTime > _nextItemInvincibilityTime)
+		{
+			_nextItemInvincibilityTime = Time.unscaledTime + 2.0f;
+			foreach (PhysGrabObject item in UnityEngine.Object.FindObjectsByType<PhysGrabObject>(FindObjectsSortMode.None))
+			{
+				if (item != null)
+				{
+					item.OverrideIndestructible(3.0f);
+					item.OverrideBreakEffects(3.0f);
+				}
+			}
+		}
+	}
+
+	public static void UpdateRare()
+	{
+		if (!_initialized) return;
+
+                bool runtimeDebugEnabled = IsRuntimeDebugEnabled();
+                long startTimestamp = runtimeDebugEnabled ? Stopwatch.GetTimestamp() : 0L;
+		if (Time.unscaledTime >= _nextNetHandlerRefreshTime)
+		{
+			_nextNetHandlerRefreshTime = Time.unscaledTime + NetHandlerRefreshIntervalSeconds;
+			EnsureNetHandlers();
+		}
+		ApplyGlobalItemInvincibility();
+		ApplyGameModifiers();
+                if (runtimeDebugEnabled)
+                {
+                        double elapsedMilliseconds = GetElapsedMilliseconds(startTimestamp);
+                        if (elapsedMilliseconds >= 2.0)
+                        {
+                                #region debug-point B:local-update-rare-spike
+                                DebugReport("B", "LocalPlayerManager.UpdateRare", "本地低频更新耗时偏高", "elapsedMs=" + elapsedMilliseconds.ToString("F2") + ",globalItemInvincible=" + ConfigManager.Config.Misc.GlobalItemInvincibility + ",nextNetRefresh=" + _nextNetHandlerRefreshTime.ToString("F2"));
+                                #endregion
+                        }
+                }
+	}
+
+	private static void ApplyGameModifiers()
+	{
+		ConfigData.GameModifiersSettings settings = ConfigManager.Config.GameModifiers;
+		bool isMaster = !GameManager.Multiplayer() || PhotonNetwork.IsMasterClient;
+
+		PlayerAvatar[] playerAvatars = UnityEngine.Object.FindObjectsByType<PlayerAvatar>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+		for (int i = 0; i < playerAvatars.Length; i++)
+		{
+			PlayerAvatar avatar = playerAvatars[i];
+			if (avatar != null && avatar.playerHealth != null && ReflectionUtils.GetFieldValue<bool>(avatar, "isLocal"))
+				ReflectionUtils.SetFieldValue(avatar.playerHealth, "godMode", settings.AllTeammatesGodMode || ConfigManager.Config.Local.GodMode);
+		}
+
+		if (settings.InfiniteChargingStation || settings.ChargingStationHeal)
+		{
+			foreach (ChargingStation station in UnityEngine.Object.FindObjectsByType<ChargingStation>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+			{
+				if (station == null)
+					continue;
+
+				if (settings.InfiniteChargingStation && isMaster)
+				{
+					// Current builds store station energy in chargeTotal/chargeFloat;
+					// amountCurrent/amountMax belonged to an older game build.
+					ReflectionUtils.SetFieldValue(station, "chargeTotal", 100);
+					ReflectionUtils.SetFieldValue(station, "chargeFloat", 1f);
+				}
+				if (settings.ChargingStationHeal && Time.unscaledTime >= _nextStationHealTime)
+				{
+					Collider[] colliders = station.GetComponentsInChildren<Collider>(true);
+					PlayerAvatar[] avatars = UnityEngine.Object.FindObjectsByType<PlayerAvatar>(FindObjectsSortMode.None);
+					for (int i = 0; i < avatars.Length; i++)
+					{
+						PlayerAvatar avatar = avatars[i];
+						if (avatar == null || ReflectionUtils.GetFieldValue<bool>(avatar, "isDisabled") || avatar.playerHealth == null || ReflectionUtils.GetFieldValue<int>(avatar.playerHealth, "health") >= ReflectionUtils.GetFieldValue<int>(avatar.playerHealth, "maxHealth"))
+							continue;
+						bool nearStation = false;
+						for (int c = 0; c < colliders.Length; c++)
+						{
+							Collider collider = colliders[c];
+							if (collider != null && collider.enabled && Vector3.Distance(collider.bounds.ClosestPoint(avatar.transform.position), avatar.transform.position) <= 2f)
+							{
+								nearStation = true;
+								break;
+							}
+						}
+						if (nearStation)
+							avatar.playerHealth.HealOther(2, true);
+					}
+					_nextStationHealTime = Time.unscaledTime + 1f;
+				}
+			}
+		}
+
+		if (settings.InfiniteWeaponBattery)
+		{
+			foreach (ItemBattery item in UnityEngine.Object.FindObjectsByType<ItemBattery>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+			{
+				PhotonView view = ReflectionUtils.GetFieldValue<PhotonView>(item, "photonView");
+				bool locallyWritable = !GameManager.Multiplayer() || view == null || view.IsMine;
+				if (item != null && locallyWritable && !item.isUnchargable && item.batteryLife < 100f)
+				{
+					item.SetBatteryLife(100);
+				}
+			}
+		}
+
+		if (settings.SpawnRateMultiplier != 1f && isMaster && EnemyDirector.instance != null)
+		{
+			int directorId = ((UnityEngine.Object)EnemyDirector.instance).GetInstanceID();
+			float current = ReflectionUtils.GetFieldValue<float>(EnemyDirector.instance, "enemyActionAmount");
+			if (_lastEnemyDirectorInstanceId != directorId || current < _lastEnemyActionAmount)
+			{
+				_lastEnemyDirectorInstanceId = directorId;
+				_lastEnemyActionAmount = current;
+			}
+			else
+			{
+				float delta = current - _lastEnemyActionAmount;
+				float multiplier = Mathf.Clamp(settings.SpawnRateMultiplier, 0.1f, 10f);
+				ReflectionUtils.SetFieldValue(EnemyDirector.instance, "enemyActionAmount", _lastEnemyActionAmount + delta * multiplier);
+				_lastEnemyActionAmount = _lastEnemyActionAmount + delta * multiplier;
+			}
+		}
+		else
+		{
+			_lastEnemyDirectorInstanceId = 0;
+		}
+
+		if (PlayerController.instance != null)
+			ReflectionUtils.SetFieldValue(PlayerController.instance, "DebugDisableOvercharge", settings.LimitActionAndOvercharge);
+	}
+
 	private static void ApplyInfiniteBattery()
 	{
 		if (!((UnityEngine.Object)(object)RoundDirector.instance == (UnityEngine.Object)null))
@@ -897,12 +1178,12 @@ public static class LocalPlayerManager
 	{
 		if (!((UnityEngine.Object)(object)PhysGrabber.instance == (UnityEngine.Object)null))
 		{
-			float num = Mathf.Clamp(ConfigManager.Config.Local.GrabStrength, 1f, MaxStableGrabStrengthMultiplier);
+			float num = Mathf.Max(Mathf.Clamp(ConfigManager.Config.Local.GrabStrength, 1f, MaxStableGrabStrengthMultiplier), _temporaryGrabStrengthMultiplier);
 			if (_originalGrabRange > 0f)
 			{
-				float grabRange = _originalGrabRange * ConfigManager.Config.Local.GrabRange;
+				float grabRange = Mathf.Max(_originalGrabRange * ConfigManager.Config.Local.GrabRange, _temporaryGrabReach);
 				PhysGrabber.instance.grabRange = grabRange;
-				PhysGrabber.instance.grabReleaseDistance = _originalGrabReleaseDistance * ConfigManager.Config.Local.GrabRange;
+				PhysGrabber.instance.grabReleaseDistance = Mathf.Max(_originalGrabReleaseDistance * ConfigManager.Config.Local.GrabRange, _temporaryGrabReach + 5f);
 			}
 			if (_grabStrengthField != null)
 			{
@@ -919,12 +1200,95 @@ public static class LocalPlayerManager
 				_forceMaxField.SetValue(PhysGrabber.instance, num3);
 				_forceConstantField.SetValue(PhysGrabber.instance, num4);
 			}
+
+			SyncGrabStrengthMultiplierToHost(num);
 		}
+
+		ApplyHeldGunAimPitch();
+	}
+
+	public static void SetTemporaryGrabOverrides(float strengthMultiplier, float reach)
+	{
+		_temporaryGrabStrengthMultiplier = Mathf.Clamp(strengthMultiplier, 1f, MaxStableGrabStrengthMultiplier);
+		_temporaryGrabReach = Mathf.Clamp(reach, 0f, 10000f);
+		ApplyGrabModifiers();
+	}
+
+	private static void SyncGrabStrengthMultiplierToHost(float multiplier)
+	{
+		if (!GameManager.Multiplayer() || SemiFunc.IsMasterClientOrSingleplayer())
+		{
+			_lastGrabStrengthNetworkMultiplier = -1f;
+			return;
+		}
+
+		bool needsRefresh = multiplier > 1.001f;
+		bool needsReset = _lastGrabStrengthNetworkMultiplier > 1.001f && multiplier <= 1.001f;
+		bool changed = _lastGrabStrengthNetworkMultiplier < 0f
+			|| Mathf.Abs(_lastGrabStrengthNetworkMultiplier - multiplier) > 0.001f;
+		if ((!needsRefresh && !needsReset) || (!changed && Time.unscaledTime < _nextGrabStrengthNetworkSyncTime))
+		{
+			return;
+		}
+
+		if (Time.unscaledTime < _nextGrabStrengthNetworkSyncTime && !needsReset)
+		{
+			return;
+		}
+
+		LocalPlayerNetHandler handler = GetLocalNetHandler();
+		if (handler != null && handler.RequestGrabStrengthMultiplier(multiplier))
+		{
+			_lastGrabStrengthNetworkMultiplier = multiplier;
+			_nextGrabStrengthNetworkSyncTime = Time.unscaledTime + (needsRefresh ? 0.2f : 0.5f);
+		}
+	}
+
+	/// <summary>
+	/// True while the local avatar is crouching. PlayerAvatar.isCrouching is
+	/// internal, so it has to be read through reflection.
+	/// </summary>
+	private static bool IsLocalPlayerCrouching()
+	{
+		if ((UnityEngine.Object)(object)PlayerController.instance == (UnityEngine.Object)null
+			|| (UnityEngine.Object)(object)PlayerController.instance.playerAvatarScript == (UnityEngine.Object)null)
+		{
+			return false;
+		}
+
+		object crouchObj = ReflectionUtils.GetFieldValue(PlayerController.instance.playerAvatarScript, "isCrouching");
+		return crouchObj is bool crouching && crouching;
+	}
+
+	private static float GetHeldGunAimVerticalOffset()
+	{
+		return IsLocalPlayerCrouching() ? CrouchAimVerticalOffset : StandAimVerticalOffset;
+	}
+
+	/// <summary>
+	/// Applies the lowered muzzle pitch every frame, so it also takes effect while
+	/// neither solid aim nor the aimbot is active (the stock ItemGun value is -5).
+	/// </summary>
+	private static void ApplyHeldGunAimPitch()
+	{
+		PhysGrabObject heldObject = GetCurrentlyGrabbedObject();
+		if ((UnityEngine.Object)(object)heldObject == (UnityEngine.Object)null)
+		{
+			return;
+		}
+
+		ItemGun gun = heldObject.GetComponent<ItemGun>();
+		if ((UnityEngine.Object)(object)gun == (UnityEngine.Object)null)
+		{
+			return;
+		}
+
+		gun.aimVerticalOffset = GetHeldGunAimVerticalOffset();
 	}
 
 	private static void RefillAllVisibleBatteries()
 	{
-		foreach (ItemBattery item in UnityEngine.Object.FindObjectsOfType<ItemBattery>(true))
+		foreach (ItemBattery item in UnityEngine.Object.FindObjectsByType<ItemBattery>(FindObjectsInactive.Include, FindObjectsSortMode.None))
 		{
 			RefillBattery(item);
 		}
@@ -980,6 +1344,507 @@ public static class LocalPlayerManager
 			return null;
 		}
 		return (PhysGrabObject)_grabbedPhysGrabObjectField.GetValue(PhysGrabber.instance);
+	}
+
+	private static void UpdateAimbotState()
+	{
+                bool runtimeDebugEnabled = IsRuntimeDebugEnabled();
+                long startTimestamp = runtimeDebugEnabled ? Stopwatch.GetTimestamp() : 0L;
+		if (ConfigManager.Config == null || ConfigManager.Config.Aimbot == null || !ConfigManager.Config.Aimbot.Enabled)
+		{
+			_aimbotTarget = null;
+			_aimbotAssistUntilTime = 0f;
+			_aimbotPullHoldUntilTime = 0f;
+			return;
+		}
+
+		if (ConfigManager.IsMenuVisible || !IsAimKeyHeld(ConfigManager.Config.Aimbot.AimKey))
+		{
+			_aimbotTarget = null;
+			_aimbotAssistUntilTime = 0f;
+			_aimbotPullHoldUntilTime = 0f;
+			return;
+		}
+
+		PhysGrabObject grabbedObject = GetCurrentlyGrabbedObject();
+		if ((UnityEngine.Object)(object)grabbedObject == (UnityEngine.Object)null)
+		{
+			_aimbotTarget = null;
+			_aimbotAssistUntilTime = 0f;
+			_aimbotPullHoldUntilTime = 0f;
+			return;
+		}
+
+		ItemGun gun = grabbedObject.GetComponent<ItemGun>();
+		Camera main = Camera.main;
+		if ((UnityEngine.Object)(object)gun == (UnityEngine.Object)null || (UnityEngine.Object)(object)main == (UnityEngine.Object)null)
+		{
+			_aimbotTarget = null;
+			_aimbotAssistUntilTime = 0f;
+			_aimbotPullHoldUntilTime = 0f;
+			return;
+		}
+		TryGetGunAimPose(gun, out var aimOrigin, out var aimForward);
+
+		Enemy target = null;
+		Vector3 targetPoint = Vector3.zero;
+		bool refreshedTarget = false;
+		if (Time.unscaledTime >= _nextAimbotScanTime || (UnityEngine.Object)(object)_aimbotTarget == (UnityEngine.Object)null)
+		{
+			_nextAimbotScanTime = Time.unscaledTime + AimbotScanIntervalSeconds;
+			if (TryFindBestAimbotTarget(main, gun, out target, out targetPoint))
+			{
+				refreshedTarget = true;
+			}
+		}
+
+		if (!refreshedTarget)
+		{
+			EnemyManager.EnemyData cachedTargetData = EnemyManager.GetEnemyData(_aimbotTarget);
+			Rect cachedRect;
+			float cachedScore;
+			Vector2 screenCenter = Cheat.Utils.MathUtils.GetScreenCenter();
+			if (_aimbotTarget != null
+				&& _aimbotAssistUntilTime > Time.unscaledTime
+				&& TryEvaluateAimbotTarget(main, cachedTargetData, screenCenter, aimOrigin, aimForward, out targetPoint, out cachedRect, out cachedScore))
+			{
+				target = _aimbotTarget;
+			}
+			else
+			{
+				_aimbotTarget = null;
+				_aimbotAssistUntilTime = 0f;
+				_aimbotPullHoldUntilTime = 0f;
+				return;
+			}
+		}
+
+		_aimbotTarget = target;
+		_aimbotTargetPoint = targetPoint;
+		_aimbotAssistUntilTime = Time.unscaledTime + AimbotAssistGraceSeconds;
+		_aimbotPullHoldUntilTime = Time.unscaledTime + AimbotPullHoldSeconds;
+
+		Quaternion desiredRotation = Quaternion.LookRotation((targetPoint - ((Component)main).transform.position).normalized, Vector3.up);
+		float smoothStrength = Mathf.Lerp(28f, 96f, Mathf.Clamp01(ConfigManager.Config.Aimbot.Smoothness));
+		float lerpFactor = 1f - Mathf.Exp((0f - smoothStrength) * Time.deltaTime);
+		Quaternion blendedRotation = Quaternion.Slerp(((Component)main).transform.rotation, desiredRotation, lerpFactor);
+		if (Quaternion.Angle(blendedRotation, desiredRotation) <= 0.35f)
+		{
+			blendedRotation = desiredRotation;
+		}
+
+		if ((UnityEngine.Object)(object)CameraAim.Instance != (UnityEngine.Object)null)
+		{
+			CameraAim.Instance.SetPlayerAim(blendedRotation, _setRotation: true);
+			CameraAim.Instance.OverrideAimSmooth(Mathf.Lerp(28f, 84f, Mathf.Clamp01(ConfigManager.Config.Aimbot.Smoothness)), 0.12f);
+			CameraAim.Instance.OverrideNoSmooth(0.12f);
+		}
+
+		if ((UnityEngine.Object)(object)PlayerController.instance != (UnityEngine.Object)null)
+		{
+			PlayerController.instance.OverrideTurnRotation(Quaternion.Euler(0f, blendedRotation.eulerAngles.y, 0f), 0.12f);
+		}
+                if (runtimeDebugEnabled)
+                {
+                        double elapsedMilliseconds = GetElapsedMilliseconds(startTimestamp);
+                        if (elapsedMilliseconds >= 1.5)
+                        {
+                                #region debug-point B:aimbot-update-spike
+                                DebugReport("B", "LocalPlayerManager.UpdateAimbotState", "自瞄更新耗时偏高", "elapsedMs=" + elapsedMilliseconds.ToString("F2") + ",hasTarget=" + (((UnityEngine.Object)(object)_aimbotTarget != (UnityEngine.Object)null) ? "true" : "false") + ",smoothness=" + ConfigManager.Config.Aimbot.Smoothness.ToString("F2") + ",drawFov=" + ConfigManager.Config.Aimbot.DrawFov + ",checkVisibility=" + ConfigManager.Config.Aimbot.CheckVisibility);
+                                #endregion
+                        }
+                }
+	}
+
+	private static bool TryFindBestAimbotTarget(Camera mainCamera, ItemGun gun, out Enemy targetEnemy, out Vector3 targetPoint)
+	{
+		targetEnemy = null;
+		targetPoint = Vector3.zero;
+		if ((UnityEngine.Object)(object)mainCamera == (UnityEngine.Object)null || (UnityEngine.Object)(object)EnemyDirector.instance == (UnityEngine.Object)null)
+		{
+			return false;
+		}
+
+		TryGetGunAimPose(gun, out var aimOrigin, out var aimForward);
+		Vector2 screenCenter = Cheat.Utils.MathUtils.GetScreenCenter();
+		float bestScore = float.MaxValue;
+		foreach (EnemyParent item in EnemyDirector.instance.enemiesSpawned)
+		{
+			if ((UnityEngine.Object)(object)item == (UnityEngine.Object)null)
+			{
+				continue;
+			}
+
+			EnemyManager.EnemyData enemyData = EnemyManager.GetEnemyData(item);
+			if (enemyData == null || !EnemyManager.IsEnemyActive(enemyData) || (UnityEngine.Object)(object)enemyData.Enemy == (UnityEngine.Object)null)
+			{
+				continue;
+			}
+			Rect enemyRect;
+			float candidateScore;
+			Vector3 candidatePoint;
+			if (!TryEvaluateAimbotTarget(mainCamera, enemyData, screenCenter, aimOrigin, aimForward, out candidatePoint, out enemyRect, out candidateScore))
+			{
+				continue;
+			}
+
+			if (!(candidateScore < bestScore))
+			{
+				continue;
+			}
+
+			bestScore = candidateScore;
+			targetEnemy = enemyData.Enemy;
+			targetPoint = candidatePoint;
+		}
+
+		return (UnityEngine.Object)(object)targetEnemy != (UnityEngine.Object)null;
+	}
+
+	private static bool TryEvaluateAimbotTarget(Camera mainCamera, EnemyManager.EnemyData enemyData, Vector2 screenCenter, Vector3 aimOrigin, Vector3 aimForward, out Vector3 targetPoint, out Rect enemyRect, out float candidateScore)
+	{
+		targetPoint = Vector3.zero;
+		enemyRect = default(Rect);
+		candidateScore = float.MaxValue;
+		if (enemyData == null || !EnemyManager.IsEnemyActive(enemyData) || (UnityEngine.Object)(object)enemyData.Enemy == (UnityEngine.Object)null)
+		{
+			return false;
+		}
+
+		Bounds enemyBounds;
+		if (!EnemyManager.TryGetAccurateBounds(enemyData, out enemyBounds))
+		{
+			return false;
+		}
+
+		targetPoint = EnemyManager.GetTargetPoint(enemyData, enemyBounds);
+		if (!Cheat.Utils.EspProjectionUtils.TryGetScreenRect(mainCamera, enemyBounds, 42f, 90f, out enemyRect))
+		{
+			return false;
+		}
+
+		float referenceFov = GetAimbotReferenceFov();
+		Vector3 projectedTargetPoint = Cheat.Utils.MathUtils.WorldToScreen(mainCamera, targetPoint, referenceFov);
+		if (projectedTargetPoint.z <= 0.05f)
+		{
+			return false;
+		}
+
+		Vector2 screenPoint = new Vector2(projectedTargetPoint.x, projectedTargetPoint.y);
+		float crosshairDistance = Cheat.Utils.MathUtils.GetScreenReferenceDistance(screenPoint, screenCenter);
+		if (crosshairDistance > Cheat.Utils.MathUtils.GetScreenReferenceRadius(ConfigManager.Config.Aimbot.FovRadius))
+		{
+			return false;
+		}
+
+		Vector3 toTarget = targetPoint - aimOrigin;
+		float targetDistance = toTarget.magnitude;
+		if (targetDistance <= 0.05f)
+		{
+			return false;
+		}
+
+		Vector3 targetDirection = toTarget / targetDistance;
+
+		if (ConfigManager.Config.Aimbot.CheckVisibility && !IsAimbotPathClear(enemyData.Enemy, aimOrigin, targetDirection, targetDistance))
+		{
+			return false;
+		}
+
+		candidateScore = crosshairDistance;
+		return true;
+	}
+
+	private static bool TryGetGunAimPose(ItemGun gun, out Vector3 origin, out Vector3 forward)
+	{
+		Transform aimTransform = ((UnityEngine.Object)(object)gun != (UnityEngine.Object)null && (UnityEngine.Object)(object)gun.gunMuzzle != (UnityEngine.Object)null)
+			? gun.gunMuzzle
+			: (((UnityEngine.Object)(object)gun != (UnityEngine.Object)null) ? ((Component)gun).transform : ((UnityEngine.Object)(object)Camera.main != (UnityEngine.Object)null ? ((Component)Camera.main).transform : null));
+		if ((UnityEngine.Object)(object)aimTransform == (UnityEngine.Object)null)
+		{
+			origin = Vector3.zero;
+			forward = Vector3.forward;
+			return false;
+		}
+
+		origin = aimTransform.position;
+		forward = aimTransform.forward.sqrMagnitude > 0.001f ? aimTransform.forward.normalized : Vector3.forward;
+		return true;
+	}
+
+	/// <summary>
+	/// Resolves the world-space point represented by the screen-center crosshair at
+	/// the selected target's depth. A real scene hit takes precedence; when the
+	/// center ray has no hit, the point on the ray at target depth is used.
+	/// </summary>
+	private static bool TryGetCrosshairAimPoint(Camera camera, Vector3 selectedTargetPoint, out Ray crosshairRay, out Vector3 aimPoint)
+	{
+		crosshairRay = default(Ray);
+		aimPoint = Vector3.zero;
+		if ((UnityEngine.Object)(object)camera == (UnityEngine.Object)null)
+		{
+			return false;
+		}
+
+		crosshairRay = camera.ScreenPointToRay(new Vector3(Screen.width * 0.5f, Screen.height * 0.5f, 0f));
+		float targetDepth = Vector3.Dot(selectedTargetPoint - crosshairRay.origin, crosshairRay.direction);
+		float rayDistance = targetDepth > 0.05f ? targetDepth : 100f;
+		RaycastHit[] hits = Physics.RaycastAll(crosshairRay, rayDistance + 0.05f, -1, QueryTriggerInteraction.Ignore);
+		Array.Sort(hits, (left, right) => left.distance.CompareTo(right.distance));
+		for (int i = 0; i < hits.Length; i++)
+		{
+			Collider collider = hits[i].collider;
+			if ((UnityEngine.Object)(object)collider == (UnityEngine.Object)null || collider.isTrigger || ShouldIgnoreAimbotHit(collider.transform))
+			{
+				continue;
+			}
+
+			aimPoint = hits[i].point;
+			return true;
+		}
+
+		// No collider intersects the crosshair ray. Preserve its direction and use
+		// the selected enemy's depth (or a far point if it is behind the camera).
+		aimPoint = crosshairRay.GetPoint(rayDistance);
+		return true;
+	}
+
+	private static bool IsAimbotPathClear(Enemy targetEnemy, Vector3 origin, Vector3 direction, float distance)
+	{
+		int mask = (int)SemiFunc.LayerMaskGetVisionObstruct() + LayerMask.GetMask("Enemy");
+		RaycastHit[] hits = Physics.SphereCastAll(origin, 0.08f, direction, distance, mask, QueryTriggerInteraction.Ignore);
+		Array.Sort(hits, (left, right) => left.distance.CompareTo(right.distance));
+		for (int i = 0; i < hits.Length; i++)
+		{
+			Collider collider = hits[i].collider;
+			if ((UnityEngine.Object)(object)collider == (UnityEngine.Object)null || collider.isTrigger)
+			{
+				continue;
+			}
+
+			Transform hitTransform = collider.transform;
+			if (IsTransformPartOfEnemy(hitTransform, targetEnemy))
+			{
+				return true;
+			}
+
+			if (ShouldIgnoreAimbotHit(hitTransform))
+			{
+				continue;
+			}
+
+			return false;
+		}
+
+		return true;
+	}
+
+	private static bool IsTransformPartOfEnemy(Transform hitTransform, Enemy targetEnemy)
+	{
+		if ((UnityEngine.Object)(object)hitTransform == (UnityEngine.Object)null || (UnityEngine.Object)(object)targetEnemy == (UnityEngine.Object)null)
+		{
+			return false;
+		}
+
+		return hitTransform.IsChildOf(((Component)targetEnemy).transform)
+			|| (UnityEngine.Object)(object)hitTransform.GetComponentInParent<Enemy>() == (UnityEngine.Object)(object)targetEnemy;
+	}
+
+	private static bool ShouldIgnoreAimbotHit(Transform hitTransform)
+	{
+		if ((UnityEngine.Object)(object)hitTransform == (UnityEngine.Object)null)
+		{
+			return true;
+		}
+
+		PlayerAvatar localAvatar = ResolveLocalPlayerAvatar();
+		if ((UnityEngine.Object)(object)localAvatar != (UnityEngine.Object)null && hitTransform.IsChildOf(((Component)localAvatar).transform))
+		{
+			return true;
+		}
+
+		if ((UnityEngine.Object)(object)PlayerController.instance != (UnityEngine.Object)null && hitTransform.IsChildOf(((Component)PlayerController.instance).transform))
+		{
+			return true;
+		}
+
+		PhysGrabObject heldObject = GetCurrentlyGrabbedObject();
+		if ((UnityEngine.Object)(object)heldObject != (UnityEngine.Object)null && hitTransform.IsChildOf(((Component)heldObject).transform))
+		{
+			return true;
+		}
+
+		return false;
+	}
+
+	private static bool IsAimKeyHeld(KeyCode keyCode)
+	{
+		if (keyCode == KeyCode.None)
+		{
+			return false;
+		}
+
+		try
+		{
+			return Input.GetKey(keyCode);
+		}
+		catch
+		{
+			return false;
+		}
+	}
+
+	private static void ApplySolidAim(PhysGrabObject obj, bool isFixedUpdate, Vector3? targetPoint)
+	{
+                long startTimestamp = IsRuntimeDebugEnabled() ? Stopwatch.GetTimestamp() : 0L;
+		if ((UnityEngine.Object)(object)obj == (UnityEngine.Object)null || ConfigManager.Config == null || (!ConfigManager.Config.Local.SolidAim && !targetPoint.HasValue))
+		{
+			return;
+		}
+		
+		ItemGun gun = obj.GetComponent<ItemGun>();
+		if ((UnityEngine.Object)(object)gun == (UnityEngine.Object)null)
+		{
+			return;
+		}
+
+		gun.aimVerticalOffset = GetHeldGunAimVerticalOffset();
+		
+		if (_physGrabObjectOverrideMassMethod == null) _physGrabObjectOverrideMassMethod = typeof(PhysGrabObject).GetMethod("OverrideMass", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+		if (_physGrabObjectOverrideTorqueStrengthMethod == null) _physGrabObjectOverrideTorqueStrengthMethod = typeof(PhysGrabObject).GetMethod("OverrideTorqueStrength", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+		if (_physGrabObjectOverrideDragMethod == null) _physGrabObjectOverrideDragMethod = typeof(PhysGrabObject).GetMethod("OverrideDrag", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+		float grabStrength = targetPoint.HasValue ? 0.82f : 1.05f;
+		float torqueStrength = targetPoint.HasValue ? 4f : 8f;
+		float dragStrength = targetPoint.HasValue ? 2.8f : 2f;
+		float angularDrag = targetPoint.HasValue ? 30f : 24f;
+		float massOverride = targetPoint.HasValue ? 0.22f : 0.25f;
+
+		TryInvoke(_physGrabObjectOverrideMassMethod, obj, massOverride, 0.1f);
+		TryInvoke(_physGrabberOverrideGrabStrengthMethod, PhysGrabber.instance, grabStrength, 0.1f);
+		ApplyHeldObjectGrabOverrides(obj, grabStrength);
+		TryInvoke(_physGrabObjectOverrideTorqueStrengthMethod, obj, torqueStrength, 0.1f);
+		TryInvoke(_physGrabObjectOverrideDragMethod, obj, dragStrength, 0.1f);
+		obj.OverrideAngularDrag(angularDrag, 0.1f);
+
+		Camera mainCamera = Camera.main;
+		if ((UnityEngine.Object)(object)mainCamera == (UnityEngine.Object)null)
+		{
+			return;
+		}
+
+		Quaternion desiredRotation = ((targetPoint.HasValue && (targetPoint.Value - ((Component)mainCamera).transform.position).sqrMagnitude > 0.0001f) ? Quaternion.LookRotation((targetPoint.Value - ((Component)mainCamera).transform.position).normalized, Vector3.up) : ((Component)mainCamera).transform.rotation);
+		if (targetPoint.HasValue && (UnityEngine.Object)(object)gun.gunMuzzle != (UnityEngine.Object)null)
+		{
+			Transform muzzle = gun.gunMuzzle;
+			// Aim the barrel at the enemy itself. The previous code aimed the muzzle at
+			// the screen-centre hit point instead; while the camera is still travelling
+			// towards the target that point sits off to one side, so the gun was dragged
+			// sideways (to the right of the target) and never settled on the enemy.
+			Vector3 muzzleToTarget = targetPoint.Value - muzzle.position;
+			if (muzzleToTarget.sqrMagnitude > 0.0001f)
+			{
+				Vector3 desiredMuzzleForward = muzzleToTarget.normalized;
+				Vector3 actualMuzzleForward = muzzle.forward.sqrMagnitude > 0.0001f ? muzzle.forward.normalized : desiredMuzzleForward;
+
+				// The game fires along gunMuzzle.forward and ItemGun.UpdateMaster adds a
+				// fixed barrel elevation on top, so correct the live muzzle direction
+				// around the held object's pivot. Building the delta from a LookRotation
+				// keeps the roll stable, unlike a FromToRotation multiplied onto rb.rotation.
+				Quaternion objectRotation = ((UnityEngine.Object)(object)obj.rb != (UnityEngine.Object)null) ? obj.rb.rotation : obj.transform.rotation;
+				Vector3 muzzleLocalForward = Quaternion.Inverse(objectRotation) * actualMuzzleForward;
+				Quaternion muzzleLocalRotation = muzzleLocalForward.sqrMagnitude > 0.0001f
+					&& Mathf.Abs(Vector3.Dot(muzzleLocalForward.normalized, Vector3.up)) < 0.99f
+					? Quaternion.LookRotation(muzzleLocalForward.normalized, Vector3.up)
+					: Quaternion.identity;
+				desiredRotation = Quaternion.LookRotation(desiredMuzzleForward, Vector3.up) * Quaternion.Inverse(muzzleLocalRotation);
+
+				if (IsRuntimeDebugEnabled())
+				{
+					UnityEngine.Debug.DrawRay(muzzle.position, desiredMuzzleForward * 20f, Color.red);
+					UnityEngine.Debug.DrawRay(muzzle.position, actualMuzzleForward * 20f, Color.yellow);
+				}
+			}
+		}
+		ForceHeldObjectLookRotation(obj, desiredRotation);
+		
+		if (obj.rb != null && isFixedUpdate)
+		{
+			float rotationSpeed = targetPoint.HasValue ? 12f : 16f;
+			obj.rb.rotation = Quaternion.Slerp(obj.rb.rotation, desiredRotation, Time.fixedDeltaTime * rotationSpeed);
+
+			if (!SemiFunc.IsMasterClientOrSingleplayer())
+			{
+				ReflectionUtils.SetFieldValue(obj, "targetRot", obj.rb.rotation);
+				ReflectionUtils.SetFieldValue(obj, "currentRotation", obj.rb.rotation);
+				obj.rb.angularVelocity = Vector3.zero;
+			}
+		}
+
+		bool isResourceEmpty = false;
+		object stateObj = ReflectionUtils.GetFieldValue(gun, "stateCurrent");
+		if (stateObj != null && (int)stateObj == 1)
+		{
+			isResourceEmpty = true;
+		}
+		
+		object battery = ReflectionUtils.GetFieldValue(gun, "itemBattery");
+		if (battery != null)
+		{
+			object batteryLifeObj = ReflectionUtils.GetFieldValue(battery, "batteryLife");
+			if (batteryLifeObj != null && (float)batteryLifeObj <= 0.1f)
+			{
+				isResourceEmpty = true;
+			}
+		}
+
+		if (!isResourceEmpty && targetPoint.HasValue)
+		{
+			gun.torqueMultiplier = 1f;
+		}
+                if (IsRuntimeDebugEnabled())
+                {
+                        double elapsedMilliseconds = GetElapsedMilliseconds(startTimestamp);
+                        if (elapsedMilliseconds >= 1.5)
+                        {
+                                #region debug-point B:solid-aim-spike
+                                DebugReport("B", "LocalPlayerManager.ApplySolidAim", "稳枪/自瞄物理覆写耗时偏高", "elapsedMs=" + elapsedMilliseconds.ToString("F2") + ",isFixedUpdate=" + isFixedUpdate + ",hasTargetPoint=" + targetPoint.HasValue + ",isClient=" + (!SemiFunc.IsMasterClientOrSingleplayer()).ToString());
+                                #endregion
+                        }
+                }
+	}
+
+	private static void ForceHeldObjectLookRotation(PhysGrabObject obj, Quaternion desiredRotation)
+	{
+		if ((UnityEngine.Object)(object)obj == (UnityEngine.Object)null)
+		{
+			return;
+		}
+
+		PlayerAvatar localAvatar = ResolveLocalPlayerAvatar();
+		Transform fallbackOverride = ((UnityEngine.Object)(object)localAvatar != (UnityEngine.Object)null && (UnityEngine.Object)(object)localAvatar.localCamera != (UnityEngine.Object)null) ? localAvatar.localCamera.GetOverrideTransform() : ((UnityEngine.Object)(object)Camera.main != (UnityEngine.Object)null ? ((Component)Camera.main).transform : null);
+		if ((UnityEngine.Object)(object)fallbackOverride == (UnityEngine.Object)null)
+		{
+			return;
+		}
+
+		if ((UnityEngine.Object)(object)PhysGrabber.instance != (UnityEngine.Object)null)
+		{
+			PhysGrabber.instance.cameraRelativeGrabbedForward = fallbackOverride.InverseTransformDirection(desiredRotation * Vector3.forward).normalized;
+			PhysGrabber.instance.cameraRelativeGrabbedUp = fallbackOverride.InverseTransformDirection(desiredRotation * Vector3.up).normalized;
+		}
+
+		foreach (PhysGrabber item in obj.playerGrabbing)
+		{
+			if ((UnityEngine.Object)(object)item == (UnityEngine.Object)null)
+			{
+				continue;
+			}
+
+			Transform overrideTransform = ((UnityEngine.Object)(object)item.playerAvatar != (UnityEngine.Object)null && (UnityEngine.Object)(object)item.playerAvatar.localCamera != (UnityEngine.Object)null) ? item.playerAvatar.localCamera.GetOverrideTransform() : fallbackOverride;
+			item.cameraRelativeGrabbedForward = overrideTransform.InverseTransformDirection(desiredRotation * Vector3.forward).normalized;
+			item.cameraRelativeGrabbedUp = overrideTransform.InverseTransformDirection(desiredRotation * Vector3.up).normalized;
+		}
 	}
 
 	private static void ApplyHeldObjectGrabOverrides(PhysGrabObject grabbedObject, float strengthMultiplier)
@@ -1060,7 +1925,6 @@ public static class LocalPlayerManager
 
 	private static void ApplyFOV()
 	{
-		float fOV = Mathf.Clamp(ConfigManager.Config.Misc.FOV, 5f, 170f);
 		Camera main = Camera.main;
 		if ((UnityEngine.Object)(object)CameraZoom.Instance != (UnityEngine.Object)null)
 		{
@@ -1068,6 +1932,13 @@ public static class LocalPlayerManager
 			{
 				_originalFOV = CameraZoom.Instance.playerZoomDefault;
 			}
+
+			if (ConfigManager.Config.Misc.FOV <= 1f)
+			{
+				return;
+			}
+
+			float fOV = Mathf.Clamp(ConfigManager.Config.Misc.FOV, 5f, 170f);
 			if (Math.Abs(CameraZoom.Instance.playerZoomDefault - fOV) > 0.1f)
 			{
 				CameraZoom.Instance.playerZoomDefault = fOV;
@@ -1089,10 +1960,142 @@ public static class LocalPlayerManager
 			{
 				_originalFOV = main.fieldOfView;
 			}
+
+			if (ConfigManager.Config.Misc.FOV <= 1f)
+			{
+				return;
+			}
+
+			float fOV = Mathf.Clamp(ConfigManager.Config.Misc.FOV, 5f, 170f);
 			if (Math.Abs(main.fieldOfView - fOV) > 0.1f)
 			{
 				main.fieldOfView = fOV;
 			}
+		}
+	}
+
+	private static bool _prevThirdPersonEnabled = false;
+
+	private static void ApplyThirdPerson()
+	{
+		bool enabled = ConfigManager.Config.Local.ThirdPerson;
+		if (enabled)
+		{
+			_prevThirdPersonEnabled = true;
+			PlayerAvatar localAvatar = ResolveLocalPlayerAvatar();
+			if (localAvatar != null)
+			{
+				if (localAvatar.localCamera != null && localAvatar.localCamera.transform != null)
+				{
+					Transform camTransform = localAvatar.localCamera.transform;
+					Vector3 localPos = camTransform.localPosition;
+					localPos.z = -ConfigManager.Config.Local.ThirdPersonDistance;
+					localPos.y = ConfigManager.Config.Local.ThirdPersonHeight;
+					localPos.x = ConfigManager.Config.Local.ThirdPersonHorizontal;
+					camTransform.localPosition = localPos;
+				}
+				
+				PlayerAvatarVisuals visuals = ReflectionUtils.GetFieldValue<PlayerAvatarVisuals>(localAvatar, "playerAvatarVisuals");
+				if (visuals != null)
+				{
+					float scale = ConfigManager.Config.Local.ThirdPersonModelScale;
+					visuals.transform.localScale = new Vector3(scale, scale, scale);
+					
+					var shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
+					foreach (Renderer renderer in visuals.GetComponentsInChildren<Renderer>(true))
+					{
+						if (renderer != null && renderer.gameObject.layer != LayerMask.NameToLayer("UI"))
+						{
+							renderer.shadowCastingMode = shadowCastingMode;
+							if (renderer.gameObject.layer == LayerMask.NameToLayer("PlayerLocal"))
+							{
+								renderer.gameObject.layer = LayerMask.NameToLayer("Default");
+							}
+						}
+					}
+				}
+			}
+		}
+		else if (_prevThirdPersonEnabled)
+		{
+			_prevThirdPersonEnabled = false;
+			PlayerAvatar localAvatar = ResolveLocalPlayerAvatar();
+			if (localAvatar != null)
+			{
+				if (localAvatar.localCamera != null && localAvatar.localCamera.transform != null)
+				{
+					localAvatar.localCamera.transform.localPosition = Vector3.zero;
+				}
+				
+				PlayerAvatarVisuals visuals = ReflectionUtils.GetFieldValue<PlayerAvatarVisuals>(localAvatar, "playerAvatarVisuals");
+				if (visuals != null)
+				{
+					visuals.transform.localScale = Vector3.one;
+					
+					var shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.ShadowsOnly;
+					foreach (Renderer renderer in visuals.GetComponentsInChildren<Renderer>(true))
+					{
+						if (renderer != null && renderer.gameObject.layer != LayerMask.NameToLayer("UI"))
+						{
+							renderer.shadowCastingMode = shadowCastingMode;
+							if (renderer.gameObject.layer == LayerMask.NameToLayer("Default"))
+							{
+								renderer.gameObject.layer = LayerMask.NameToLayer("PlayerLocal");
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	private static void ApplyTumbleFly()
+	{
+		if (!ConfigManager.Config.Local.TumbleFly)
+			return;
+
+		PlayerAvatar avatar = ResolveLocalPlayerAvatar();
+		if ((UnityEngine.Object)(object)avatar == (UnityEngine.Object)null)
+			return;
+
+		PlayerTumble tumble = GetPlayerTumble(avatar);
+		if ((UnityEngine.Object)(object)tumble == (UnityEngine.Object)null)
+			return;
+
+		bool isTumbling = ReflectionUtils.GetFieldValue<bool>(tumble, "isTumbling");
+		if (!isTumbling)
+			return;
+
+		Rigidbody rb = ReflectionUtils.GetFieldValue<Rigidbody>(tumble, "rb");
+		if ((UnityEngine.Object)(object)rb == (UnityEngine.Object)null)
+			return;
+
+		float speed = 12f;
+		if (Input.GetKey(KeyCode.LeftShift) || (PlayerController.instance != null && PlayerController.instance.sprinting))
+		{
+			speed = 28f;
+		}
+
+		Vector3 movement = Vector3.zero;
+		Camera mainCamera = Camera.main;
+
+		if ((UnityEngine.Object)(object)mainCamera != (UnityEngine.Object)null)
+		{
+			Vector3 forward = mainCamera.transform.forward;
+			Vector3 right = mainCamera.transform.right;
+			
+			if (Input.GetKey(KeyCode.W)) movement += forward;
+			if (Input.GetKey(KeyCode.S)) movement -= forward;
+			if (Input.GetKey(KeyCode.A)) movement -= right;
+			if (Input.GetKey(KeyCode.D)) movement += right;
+		}
+		
+		if (Input.GetKey(KeyCode.Space)) movement += Vector3.up;
+		if (Input.GetKey(KeyCode.LeftControl)) movement -= Vector3.up;
+
+		if (movement.sqrMagnitude > 0.001f)
+		{
+			rb.velocity = movement.normalized * speed;
 		}
 	}
 
@@ -1101,7 +2104,7 @@ public static class LocalPlayerManager
 		PlayerAvatar localPlayerAvatar = ResolveLocalPlayerAvatar();
 		if ((UnityEngine.Object)(object)localPlayerAvatar == (UnityEngine.Object)null)
 		{
-			LastActionStatus = "本地玩家未初始化，无法执行传送。";
+			LastActionStatus = "你当前不可用，无法执行传送。";
 			return false;
 		}
 
@@ -1110,7 +2113,6 @@ public static class LocalPlayerManager
 		#region debug-point B:teleport-local-player
 		DebugReport("B", "LocalPlayerManager.TeleportLocalPlayer", "开始执行玩家传送", "singleOrMaster=" + SemiFunc.IsMasterClientOrSingleplayer() + ",avatar=" + DescribePlayerAvatar(localPlayerAvatar) + ",destination=" + destination + ",rotationY=" + rotation.eulerAngles.y + ",avatarPosBefore=" + GetTransformPosition(localPlayerAvatar) + ",controllerPosBefore=" + GetTransformPosition(PlayerController.instance) + ",rbPosBefore=" + GetRigidbodyPosition(PlayerController.instance));
 		#endregion
-		_pendingHomeTeleportDebugFrames = 12;
 		_pendingHomeTeleportTarget = destination;
 		_pendingHomeTeleportRotation = rotation;
 		_pendingHomeTeleportSource = successMessage;
@@ -1125,16 +2127,32 @@ public static class LocalPlayerManager
 			return true;
 		}
 
-		LocalPlayerNetHandler localNetHandler = GetLocalNetHandler();
-		if ((UnityEngine.Object)(object)localNetHandler == (UnityEngine.Object)null || !localNetHandler.RequestSpawn(destination, rotation))
+		// The local player's PhysGrabObject.Teleport path is owner-validated by the
+		// game and relays the position to the master. Keep local prediction for
+		// responsiveness; the master then publishes the authoritative transform.
+		if (NativeTeleportModule.TryTeleportLocalPlayer(localPlayerAvatar, destination, rotation))
 		{
-			LastActionStatus = "本地玩家网络传送处理器未就绪。";
-			return false;
+			LastActionStatus = NativeTeleportModule.LastStatus;
+			return true;
 		}
 
-		#region debug-point H2:teleport-local-network-requested
-		DebugReport("H2", "LocalPlayerManager.TeleportLocalPlayer", "已向主机发送回家传送请求", "avatar=" + DescribePlayerAvatar(localPlayerAvatar) + ",netHandler=" + (((UnityEngine.Object)(object)localNetHandler != (UnityEngine.Object)null) ? ((UnityEngine.Object)(object)localNetHandler).name : "null") + ",destination=" + destination + ",rotationY=" + rotation.eulerAngles.y);
-		#endregion
+		// Compatibility fallback for game versions without the player-body native path.
+		PlayerController.instance.transform.position = destination;
+		PlayerController.instance.transform.rotation = rotation;
+		if ((UnityEngine.Object)(object)PlayerController.instance.rb != (UnityEngine.Object)null)
+		{
+			PlayerController.instance.rb.position = destination;
+			PlayerController.instance.rb.rotation = rotation;
+			PlayerController.instance.rb.velocity = Vector3.zero;
+			PlayerController.instance.rb.angularVelocity = Vector3.zero;
+		}
+
+		if ((UnityEngine.Object)(object)localPlayerAvatar != (UnityEngine.Object)null)
+		{
+			localPlayerAvatar.transform.position = destination;
+			localPlayerAvatar.transform.rotation = rotation;
+		}
+
 		LastActionStatus = successMessage;
 		return true;
 	}
@@ -1146,46 +2164,50 @@ public static class LocalPlayerManager
 			LastActionStatus = "目标怪物或本地玩家不可用，无法执行传送。";
 			return false;
 		}
-
-		if (SemiFunc.IsMasterClientOrSingleplayer())
+		if (!NativeTeleportModule.TryBeginAction(TeleportAction.EnemyToPlayer))
 		{
-			PlayerAvatar playerAvatar = ResolveLocalPlayerAvatar();
-			Transform transform = ((Component)PlayerController.instance).transform;
-			Vector3 destination = ResolveEnemyPullDestination(playerAvatar, transform);
-			ExecuteAuthoritativeEnemyTeleport(enemy, destination);
-			LastActionStatus = string.Format("已将 `{0}` 传送到玩家身边。", enemyName);
-			return true;
-		}
-
-		PhotonView component = ResolveEnemyPhotonView(enemy);
-		LocalPlayerNetHandler localNetHandler = GetLocalNetHandler();
-		if ((UnityEngine.Object)(object)component == (UnityEngine.Object)null || component.ViewID == 0 || (UnityEngine.Object)(object)localNetHandler == (UnityEngine.Object)null || !localNetHandler.RequestTeleportEnemyToPlayer(component.ViewID))
-		{
-			LastActionStatus = string.Format("无法向主机发送 `{0}` 的传送请求。", enemyName);
+			LastActionStatus = NativeTeleportModule.LastStatus;
 			return false;
 		}
 
-		LastActionStatus = string.Format("已向主机发送 `{0}` 拉到身边的请求。", enemyName);
+		Transform playerTransform = ((Component)PlayerController.instance).transform;
+		if (!NativeTeleportModule.IsWithinDistance(playerTransform.position, enemy.transform.position))
+		{
+			LastActionStatus = string.Format("{0} 超出设置的传送距离。", enemyName);
+			return false;
+		}
+
+		Vector3 destination = ResolveEnemyPullDestination(ResolveLocalPlayerAvatar(), playerTransform);
+		if (!NativeTeleportModule.TryTeleportEnemyLocally(enemy, destination))
+		{
+			LastActionStatus = NativeTeleportModule.LastStatus;
+			return false;
+		}
+
+		LastActionStatus = NativeTeleportModule.LastStatus;
 		return true;
 	}
 
-	public static bool RequestLootTeleport(Vector3 targetCenter, bool teleportDoors, out string status)
+	private static System.Collections.IEnumerator RestoreKinematicRoutine(Rigidbody rb, float delay)
 	{
-		status = "本地玩家网络传送处理器未就绪。";
+		yield return new WaitForSeconds(delay);
+		if (rb != null)
+		{
+			rb.isKinematic = false;
+		}
+	}
+
+	/// <summary>Requests the master client to spawn a catalogued item at the supplied position.</summary>
+	public static bool RequestSpawnItem(string resourcePath, Vector3 position, Quaternion rotation)
+	{
+		if (!SemiFunc.IsMultiplayer() || PhotonNetwork.IsMasterClient || string.IsNullOrWhiteSpace(resourcePath) || !IsFinite(position))
+		{
+			return false;
+		}
+
 		LocalPlayerNetHandler localNetHandler = GetLocalNetHandler();
-		if ((UnityEngine.Object)(object)localNetHandler == (UnityEngine.Object)null)
-		{
-			return false;
-		}
-
-		int mode = teleportDoors ? LootTeleportModeDoors : LootTeleportModeValuables;
-		if (!localNetHandler.RequestLootTeleport(targetCenter, mode))
-		{
-			return false;
-		}
-
-		status = teleportDoors ? "已向主机发送门传送请求。" : "已向主机发送有价值物品传送请求。";
-		return true;
+		return (UnityEngine.Object)(object)localNetHandler != (UnityEngine.Object)null
+			&& localNetHandler.RequestSpawnItem(resourcePath, position, rotation);
 	}
 
 	public static void RequestLooseItemProtection()
@@ -1204,6 +2226,46 @@ public static class LocalPlayerManager
 		#region debug-point H1:teleport-home-click
 		DebugReport("H1", "LocalPlayerManager.TeleportHome", "收到一键回家请求", "controller=" + GetTransformPosition(PlayerController.instance) + ",avatar=" + DescribePlayerAvatar(ResolveLocalPlayerAvatar()) + ",controllerAvatar=" + DescribePlayerAvatar((PlayerController.instance != null) ? PlayerController.instance.playerAvatarScript : null));
 		#endregion
+
+		if (!SemiFunc.IsMasterClientOrSingleplayer() && (UnityEngine.Object)(object)PlayerController.instance != (UnityEngine.Object)null)
+		{
+			if (GameDirector.instance != null && GameDirector.instance.currentState == GameDirector.gameState.Main)
+			{
+				PlayerAvatar avatar = ResolveLocalPlayerAvatar();
+				PlayerTumble tumble = GetPlayerTumble(avatar);
+				if ((UnityEngine.Object)(object)tumble != (UnityEngine.Object)null && ReflectionUtils.GetFieldValue<bool>(tumble, "isTumbling"))
+				{
+					// 如果玩家已经在翻滚状态，先强行取消翻滚再改坐标，否则触发不了机制
+					tumble.TumbleSet(false, false);
+				}
+
+				Vector3 voidPos = PlayerController.instance.transform.position;
+				voidPos.y = -150f;
+				
+				PlayerController.instance.transform.position = voidPos;
+				if ((UnityEngine.Object)(object)PlayerController.instance.rb != (UnityEngine.Object)null)
+				{
+					PlayerController.instance.rb.position = voidPos;
+					PlayerController.instance.rb.velocity = Vector3.zero;
+				}
+				
+				if ((UnityEngine.Object)(object)avatar != (UnityEngine.Object)null)
+				{
+					avatar.transform.position = voidPos;
+				}
+
+				_homeTeleportNoTumbleTimer = 1.5f;
+
+				LastActionStatus = "检测到异常坠落，正在返回安全位置……";
+				return true;
+			}
+			else
+			{
+				LastActionStatus = "当前场景无法自动返回安全位置。";
+				return false;
+			}
+		}
+
 		if (!ResolveHomeDestination(out var position, out var rotation, out var description))
 		{
 			LastActionStatus = "当前关卡未找到可用的出生点或电车安全点，无法一键回家。";
@@ -1219,6 +2281,9 @@ public static class LocalPlayerManager
 	private static LocalPlayerNetHandler GetLocalNetHandler()
 	{
 		PlayerAvatar val = ResolveLocalPlayerAvatar();
+		#region debug-point A:get-local-net-handler
+		DebugReport("A", "LocalPlayerManager.GetLocalNetHandler", "尝试获取本地网络处理器", "avatar=" + DescribePlayerAvatar(val) + ",controllerAvatar=" + DescribePlayerAvatar((PlayerController.instance != null) ? PlayerController.instance.playerAvatarScript : null));
+		#endregion
 		if ((UnityEngine.Object)(object)val == (UnityEngine.Object)null)
 		{
 			return null;
@@ -1398,26 +2463,44 @@ public static class LocalPlayerManager
 		{
 			return;
 		}
-		try
+		long nowTicks = DateTime.UtcNow.Ticks;
+		long lastTicks = Interlocked.Read(ref _lastDebugReportTicks);
+		if (lastTicks != 0L && new TimeSpan(nowTicks - lastTicks).TotalSeconds < DebugReportMinimumIntervalSeconds)
 		{
-			string s = "{\"sessionId\":\"" + EscapeJson(_debugSessionId) + "\",\"runId\":\"" + EscapeJson(_debugRunId) + "\",\"hypothesisId\":\"" + EscapeJson(hypothesisId) + "\",\"location\":\"" + EscapeJson(location) + "\",\"msg\":\"[DEBUG] " + EscapeJson(msg) + "\",\"data\":{\"text\":\"" + EscapeJson(data ?? string.Empty) + "\"},\"ts\":" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString() + "}";
-			byte[] bytes = Encoding.UTF8.GetBytes(s);
-			HttpWebRequest httpWebRequest = (HttpWebRequest)WebRequest.Create(_debugServerUrl);
-			httpWebRequest.Method = "POST";
-			httpWebRequest.ContentType = "application/json";
-			httpWebRequest.Timeout = 250;
-			httpWebRequest.ReadWriteTimeout = 250;
-			httpWebRequest.Proxy = null;
-			using (Stream requestStream = httpWebRequest.GetRequestStream())
+			return;
+		}
+		if (Interlocked.CompareExchange(ref _debugReportInFlight, 1, 0) != 0)
+		{
+			return;
+		}
+		Interlocked.Exchange(ref _lastDebugReportTicks, nowTicks);
+		ThreadPool.QueueUserWorkItem(delegate
+		{
+			try
 			{
-				requestStream.Write(bytes, 0, bytes.Length);
-			}
+				string s = "{\"sessionId\":\"" + EscapeJson(_debugSessionId) + "\",\"runId\":\"" + EscapeJson(_debugRunId) + "\",\"hypothesisId\":\"" + EscapeJson(hypothesisId) + "\",\"location\":\"" + EscapeJson(location) + "\",\"msg\":\"[DEBUG] " + EscapeJson(msg) + "\",\"data\":{\"text\":\"" + EscapeJson(data ?? string.Empty) + "\"},\"ts\":" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString() + "}";
+				byte[] bytes = Encoding.UTF8.GetBytes(s);
+				HttpWebRequest httpWebRequest = (HttpWebRequest)WebRequest.Create(_debugServerUrl);
+				httpWebRequest.Method = "POST";
+				httpWebRequest.ContentType = "application/json";
+				httpWebRequest.Timeout = 250;
+				httpWebRequest.ReadWriteTimeout = 250;
+				httpWebRequest.Proxy = null;
+				using (Stream requestStream = httpWebRequest.GetRequestStream())
+				{
+					requestStream.Write(bytes, 0, bytes.Length);
+				}
 
-			using HttpWebResponse httpWebResponse = (HttpWebResponse)httpWebRequest.GetResponse();
-		}
-		catch
-		{
-		}
+				using HttpWebResponse httpWebResponse = (HttpWebResponse)httpWebRequest.GetResponse();
+			}
+			catch
+			{
+			}
+			finally
+			{
+				Interlocked.Exchange(ref _debugReportInFlight, 0);
+			}
+		});
 	}
 
 	private static double GetElapsedMilliseconds(long startTimestamp)
@@ -1439,14 +2522,19 @@ public static class LocalPlayerManager
 		_debugServerUrl = "http://127.0.0.1:7777/event";
 		_debugSessionId = DebugSessionId;
 		_debugRunId = DebugRunId;
-		if (!File.Exists(DebugEnvPath))
+		string debugEnvPath = DebugEnvPath;
+		if (!File.Exists(debugEnvPath) && File.Exists(DebugEnvPathFallback))
+		{
+			debugEnvPath = DebugEnvPathFallback;
+		}
+		if (!File.Exists(debugEnvPath))
 		{
 			return;
 		}
 
 		try
 		{
-			string[] array = File.ReadAllLines(DebugEnvPath);
+			string[] array = File.ReadAllLines(debugEnvPath);
 			for (int i = 0; i < array.Length; i++)
 			{
 				string text = array[i];
@@ -1500,13 +2588,26 @@ public static class LocalPlayerManager
 
 	private static PlayerAvatar ResolveLocalPlayerAvatar()
 	{
-		if ((UnityEngine.Object)(object)PlayerController.instance != (UnityEngine.Object)null && (UnityEngine.Object)(object)PlayerController.instance.playerAvatarScript != (UnityEngine.Object)null)
+		if ((UnityEngine.Object)(object)_cachedLocalAvatar != (UnityEngine.Object)null && Time.unscaledTime - _cachedLocalAvatarTime < 1f)
 		{
-			return PlayerController.instance.playerAvatarScript;
+			if (IsOwnedLocalAvatar(_cachedLocalAvatar))
+			{
+				return _cachedLocalAvatar;
+			}
 		}
 
-		if ((UnityEngine.Object)(object)PlayerAvatar.instance != (UnityEngine.Object)null)
+		PlayerAvatar controllerAvatar = ((UnityEngine.Object)(object)PlayerController.instance != (UnityEngine.Object)null) ? PlayerController.instance.playerAvatarScript : null;
+		if (IsOwnedLocalAvatar(controllerAvatar))
 		{
+			_cachedLocalAvatar = controllerAvatar;
+			_cachedLocalAvatarTime = Time.unscaledTime;
+			return controllerAvatar;
+		}
+
+		if (IsOwnedLocalAvatar(PlayerAvatar.instance))
+		{
+			_cachedLocalAvatar = PlayerAvatar.instance;
+			_cachedLocalAvatarTime = Time.unscaledTime;
 			return PlayerAvatar.instance;
 		}
 
@@ -1514,13 +2615,52 @@ public static class LocalPlayerManager
 		for (int i = 0; i < array.Length; i++)
 		{
 			PlayerAvatar val = array[i];
-			if (!((UnityEngine.Object)(object)val == (UnityEngine.Object)null) && !((UnityEngine.Object)(object)val.photonView == (UnityEngine.Object)null) && val.photonView.IsMine)
+			if (IsOwnedLocalAvatar(val))
 			{
+				_cachedLocalAvatar = val;
+				_cachedLocalAvatarTime = Time.unscaledTime;
 				return val;
 			}
 		}
 
+		if (!GameManager.Multiplayer())
+		{
+			if ((UnityEngine.Object)(object)controllerAvatar != (UnityEngine.Object)null)
+			{
+				_cachedLocalAvatar = controllerAvatar;
+				_cachedLocalAvatarTime = Time.unscaledTime;
+				return controllerAvatar;
+			}
+
+			if ((UnityEngine.Object)(object)PlayerAvatar.instance != (UnityEngine.Object)null)
+			{
+				_cachedLocalAvatar = PlayerAvatar.instance;
+				_cachedLocalAvatarTime = Time.unscaledTime;
+				return PlayerAvatar.instance;
+			}
+		}
+
 		return null;
+	}
+
+	private static bool IsOwnedLocalAvatar(PlayerAvatar avatar)
+	{
+		if ((UnityEngine.Object)(object)avatar == (UnityEngine.Object)null)
+		{
+			return false;
+		}
+
+		if (!GameManager.Multiplayer())
+		{
+			return true;
+		}
+
+		if ((UnityEngine.Object)(object)avatar.photonView != (UnityEngine.Object)null && avatar.photonView.IsMine)
+		{
+			return true;
+		}
+
+		return ReflectionUtils.GetFieldValue<bool>(avatar, "isLocal");
 	}
 
 	private static PhotonView ResolveEnemyPhotonView(Enemy enemy)
@@ -1560,6 +2700,11 @@ public static class LocalPlayerManager
 		}
 
 		return groundedPoint;
+	}
+
+	public static void TeleportPlayerByMaster(PlayerAvatar avatar, Vector3 destination, Quaternion rotation, string source)
+	{
+		ExecuteAuthoritativePlayerTeleport(avatar, destination, rotation, source);
 	}
 
 	private static void ExecuteAuthoritativePlayerTeleport(PlayerAvatar avatar, Vector3 destination, Quaternion rotation, string source)
@@ -1637,76 +2782,6 @@ public static class LocalPlayerManager
 		#region debug-point H4:apply-native-player-teleport
 		DebugReport("H4", "LocalPlayerManager.ApplyNativePlayerTeleportState", "已按原生物理链路修正玩家传送状态", "source=" + (source ?? string.Empty) + ",avatar=" + DescribePlayerAvatar(avatar) + ",destination=" + destination + ",rotationY=" + rotation.eulerAngles.y + ",avatarPos=" + avatarTransform.position + ",controllerPos=" + GetTransformPosition(PlayerController.instance) + ",rbPos=" + GetRigidbodyPosition(PlayerController.instance) + ",hasTumble=" + ((UnityEngine.Object)(object)playerTumble != (UnityEngine.Object)null));
 		#endregion
-	}
-
-	private static void ExecuteAuthoritativeEnemyTeleport(Enemy enemy, Vector3 destination)
-	{
-		if ((UnityEngine.Object)(object)enemy == (UnityEngine.Object)null)
-		{
-			return;
-		}
-
-		enemy.EnemyTeleported(destination);
-		ApplyNativeEnemyTeleportState(enemy, destination);
-	}
-
-	private static void ApplyNativeEnemyTeleportState(Enemy enemy, Vector3 destination)
-	{
-		if ((UnityEngine.Object)(object)enemy == (UnityEngine.Object)null)
-		{
-			return;
-		}
-
-		Transform enemyTransform = ((Component)enemy).transform;
-		enemyTransform.position = destination;
-
-		try
-		{
-			EnemyNavMeshAgent enemyNav = ReflectionUtils.GetFieldValue<EnemyNavMeshAgent>(enemy, "NavMeshAgent");
-			if ((UnityEngine.Object)(object)enemyNav != (UnityEngine.Object)null)
-			{
-				NavMeshAgent agent = ReflectionUtils.GetFieldValue<NavMeshAgent>(enemyNav, "Agent");
-				if ((UnityEngine.Object)(object)agent != (UnityEngine.Object)null && agent.isActiveAndEnabled)
-				{
-					agent.Warp(destination);
-				}
-			}
-		}
-		catch { }
-
-		Rigidbody rb = ((Component)enemy).GetComponent<Rigidbody>();
-		if ((UnityEngine.Object)(object)rb == (UnityEngine.Object)null)
-		{
-			rb = ((Component)enemy).GetComponentInChildren<Rigidbody>();
-		}
-		if ((UnityEngine.Object)(object)rb != (UnityEngine.Object)null)
-		{
-			rb.position = destination;
-			rb.velocity = Vector3.zero;
-			rb.angularVelocity = Vector3.zero;
-		}
-
-		try
-		{
-			object enemyRb = ReflectionUtils.GetFieldValue(enemy, "EnemyRigidbody");
-			if (enemyRb != null)
-			{
-				PhysGrabObject pgo = ReflectionUtils.GetFieldValue<PhysGrabObject>(enemyRb, "physGrabObject");
-				if ((UnityEngine.Object)(object)pgo != (UnityEngine.Object)null)
-				{
-					pgo.Teleport(destination, enemyTransform.rotation);
-					if ((UnityEngine.Object)(object)pgo.rb != (UnityEngine.Object)null)
-					{
-						pgo.rb.position = destination;
-						pgo.rb.velocity = Vector3.zero;
-						pgo.rb.angularVelocity = Vector3.zero;
-					}
-					ReflectionUtils.SetFieldValue(pgo, "targetPos", destination);
-					ReflectionUtils.SetFieldValue(pgo, "currentPosition", destination);
-				}
-			}
-		}
-		catch { }
 	}
 
 	private static void ResetLocalPlayerVelocity()
@@ -1803,12 +2878,77 @@ public static class LocalPlayerManager
 		}
 	}
 
+	public static void ApplySkillModifications()
+	{
+		PlayerAvatar localAvatar = ResolveLocalPlayerAvatar();
+		if (localAvatar == null || StatsManager.instance == null || PunManager.instance == null)
+		{
+			Console.WriteLine("[Skill] Failed to apply skills: Local avatar, StatsManager, or PunManager not found.");
+			return;
+		}
+
+		string steamID = ReflectionUtils.GetFieldValue<string>(localAvatar, "steamID");
+		if (string.IsNullOrEmpty(steamID))
+		{
+			Console.WriteLine("[Skill] Failed to apply skills: Local steamID is empty.");
+			return;
+		}
+
+		ConfigData.SkillSettings s = ConfigManager.Config.Skills;
+		ApplySkillDelta(steamID, "Stamina", s.Stamina, StatsManager.instance.playerUpgradeStamina);
+		ApplySkillDelta(steamID, "Health", s.Health, StatsManager.instance.playerUpgradeHealth);
+		ApplySkillDelta(steamID, "TumbleWings", s.TumbleWings, StatsManager.instance.playerUpgradeTumbleWings);
+		ApplySkillDelta(steamID, "CrouchRest", s.CrouchRest, StatsManager.instance.playerUpgradeCrouchRest);
+		ApplySkillDelta(steamID, "DeathHeadBattery", s.DeathHeadBattery, StatsManager.instance.playerUpgradeDeathHeadBattery);
+		ApplySkillDelta(steamID, "Launch", s.Launch, StatsManager.instance.playerUpgradeLaunch);
+		ApplySkillDelta(steamID, "MapPlayerCount", s.MapPlayerCount, StatsManager.instance.playerUpgradeMapPlayerCount);
+		ApplySkillDelta(steamID, "Throw", s.Throw, StatsManager.instance.playerUpgradeThrow);
+		ApplySkillDelta(steamID, "TumbleClimb", s.TumbleClimb, StatsManager.instance.playerUpgradeTumbleClimb);
+
+		Console.WriteLine("[Skill] Applied skill modifications.");
+	}
+
+	private static void ApplySkillDelta(string steamID, string type, int targetLevel, Dictionary<string, int> statsDict)
+	{
+		int currentLevel = statsDict != null && statsDict.ContainsKey(steamID) ? statsDict[steamID] : 0;
+		int delta = targetLevel - currentLevel;
+		if (delta == 0) return;
+
+		switch (type)
+		{
+			case "Stamina": PunManager.instance.UpgradePlayerEnergy(steamID, delta); break;
+			case "Health": PunManager.instance.UpgradePlayerHealth(steamID, delta); break;
+			case "TumbleWings": PunManager.instance.UpgradePlayerTumbleWings(steamID, delta); break;
+			case "CrouchRest": PunManager.instance.UpgradePlayerCrouchRest(steamID, delta); break;
+			case "DeathHeadBattery": PunManager.instance.UpgradeDeathHeadBattery(steamID, delta); break;
+			case "Launch": PunManager.instance.UpgradePlayerTumbleLaunch(steamID, delta); break;
+			case "MapPlayerCount": PunManager.instance.UpgradeMapPlayerCount(steamID, delta); break;
+			case "Throw": PunManager.instance.UpgradePlayerThrowStrength(steamID, delta); break;
+			case "TumbleClimb": PunManager.instance.UpgradePlayerTumbleClimb(steamID, delta); break;
+		}
+	}
+
 	public static void Cleanup()
 	{
+		_temporaryHealthLock = false;
+		_temporaryGrabStrengthMultiplier = 1f;
+		_temporaryGrabReach = 0f;
+		if (GameManager.Multiplayer() && !SemiFunc.IsMasterClientOrSingleplayer()
+			&& _lastGrabStrengthNetworkMultiplier > 1.001f)
+		{
+			GetLocalNetHandler()?.RequestGrabStrengthMultiplier(1f);
+			_lastGrabStrengthNetworkMultiplier = 1f;
+		}
+
 		if (_noClipActive)
 		{
 			ConfigManager.Config.Local.NoClip = false;
 			ApplyNoClip();
+		}
+		if (_prevThirdPersonEnabled)
+		{
+			ConfigManager.Config.Local.ThirdPerson = false;
+			ApplyThirdPerson();
 		}
 		if ((UnityEngine.Object)(object)PlayerController.instance != (UnityEngine.Object)null)
 		{

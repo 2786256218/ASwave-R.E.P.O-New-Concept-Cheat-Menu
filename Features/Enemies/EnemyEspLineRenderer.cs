@@ -119,45 +119,7 @@ public class EnemyEspLineRenderer : MonoBehaviour
 			UnityEngine.Object.Destroy((UnityEngine.Object)(object)this);
 			return;
 		}
-		if (ConfigManager.Config.Enemies.RenderMethod != 2)
-		{
-			((Renderer)_lineRenderer).enabled = false;
-			return;
-		}
-		((Renderer)_lineRenderer).enabled = true;
-		_lineRenderer.startColor = ConfigManager.Config.Enemies.EspColor;
-		_lineRenderer.endColor = ConfigManager.Config.Enemies.EspColor;
-		Bounds bounds = EspProjectionUtils.GetWorldBounds(((Component)this).transform, _data.Renderers, ShouldUseEnemyRenderer, ((Component)this).transform.position + Vector3.up, EnemyFallbackSize);
-		Vector3 min = bounds.min;
-		Vector3 max = bounds.max;
-		Vector3 val = default(Vector3);
-		val = new Vector3(min.x, min.y, min.z);
-		Vector3 val2 = default(Vector3);
-		val2 = new Vector3(max.x, min.y, min.z);
-		Vector3 val3 = default(Vector3);
-		val3 = new Vector3(max.x, min.y, max.z);
-		Vector3 val4 = default(Vector3);
-		val4 = new Vector3(min.x, min.y, max.z);
-		Vector3 val5 = default(Vector3);
-		val5 = new Vector3(min.x, max.y, min.z);
-		Vector3 val6 = default(Vector3);
-		val6 = new Vector3(max.x, max.y, min.z);
-		Vector3 val7 = default(Vector3);
-		val7 = new Vector3(max.x, max.y, max.z);
-		Vector3 val8 = default(Vector3);
-		val8 = new Vector3(min.x, max.y, max.z);
-		Vector3[] array = (Vector3[])(object)new Vector3[16]
-		{
-			val, val2, val3, val4, val, val5, val6, val7, val8, val5,
-			val6, val2, val3, val7, val8, val4
-		};
-		_lineRenderer.positionCount = array.Length;
-		_lineRenderer.SetPositions(array);
-	}
-
-	private static bool ShouldUseEnemyRenderer(Renderer renderer)
-	{
-		return !((UnityEngine.Object)(object)renderer == (UnityEngine.Object)null) && renderer.enabled;
+		((Renderer)_lineRenderer).enabled = false;
 	}
 
 	private void OnDestroy()

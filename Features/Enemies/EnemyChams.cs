@@ -19,6 +19,10 @@ public class EnemyChams : MonoBehaviour
 
 	private List<Renderer> _processedRenderers = new List<Renderer>();
 
+	private Dictionary<SkinnedMeshRenderer, Mesh> _bakedMeshes = new Dictionary<SkinnedMeshRenderer, Mesh>();
+
+	private readonly MaterialPropertyBlock _glowProperties = new MaterialPropertyBlock();
+
 	public static EnemyChams Instance
 	{
 		get
@@ -67,6 +71,9 @@ public class EnemyChams : MonoBehaviour
 		{
 			_chamMaterial = new Material(val);
 			((UnityEngine.Object)_chamMaterial).hideFlags = (HideFlags)61;
+			_chamMaterial.renderQueue = 4000;
+			_chamMaterial.SetInt("_SrcBlend", 5);
+			_chamMaterial.SetInt("_DstBlend", 10);
 			_chamMaterial.SetInt("_ZTest", 8);
 			_chamMaterial.SetInt("_ZWrite", 0);
 			_chamMaterial.SetInt("_Cull", 0);
@@ -106,9 +113,12 @@ public class EnemyChams : MonoBehaviour
 		if (Time.time - _lastUpdate > 0.5f)
 		{
 			_lastUpdate = Time.time;
-			if (ConfigManager.Config.Enemies.HighlightEnabled)
+			bool shouldGlow = ConfigManager.Config.Enemies.EspEnabled && ConfigManager.Config.Enemies.RenderMethod == 2;
+			ConfigManager.Config.Enemies.HighlightEnabled = shouldGlow;
+			if (shouldGlow)
 			{
-				ApplyChams();
+				if ((UnityEngine.Object)(object)_chamMaterial == (UnityEngine.Object)null)
+					CreateChamMaterial();
 			}
 			else
 			{
@@ -122,12 +132,116 @@ public class EnemyChams : MonoBehaviour
 		ConfigManager.Config.Enemies.HighlightEnabled = enabled;
 		if (enabled)
 		{
-			ApplyChams();
+			if ((UnityEngine.Object)(object)_chamMaterial == (UnityEngine.Object)null)
+				CreateChamMaterial();
 		}
 		else
 		{
 			RemoveChams();
 		}
+	}
+
+	public static void DrawOverlay()
+	{
+		if ((UnityEngine.Object)(object)_instance == (UnityEngine.Object)null || ConfigManager.Config == null || !ConfigManager.Config.Enemies.EspEnabled || ConfigManager.Config.Enemies.RenderMethod != 2)
+			return;
+		_instance.DrawOverlayMeshes();
+	}
+
+	private void DrawOverlayMeshes()
+	{
+		if ((UnityEngine.Object)(object)_chamMaterial == (UnityEngine.Object)null)
+			CreateChamMaterial();
+		if ((UnityEngine.Object)(object)_chamMaterial == (UnityEngine.Object)null || (UnityEngine.Object)(object)Camera.main == (UnityEngine.Object)null || (UnityEngine.Object)(object)EnemyDirector.instance == (UnityEngine.Object)null)
+			return;
+
+		Camera camera = Camera.main;
+		Vector3 cameraPosition = camera.transform.position;
+		float maxDistance = Mathf.Clamp(ConfigManager.Config.Enemies.HighlightMaxDistance, 10f, 5000f);
+		float maxDistanceSqr = maxDistance * maxDistance;
+		foreach (EnemyParent parent in EnemyDirector.instance.enemiesSpawned)
+		{
+			if ((UnityEngine.Object)(object)parent == (UnityEngine.Object)null || !((Component)parent).gameObject.activeInHierarchy || (((Component)parent).transform.position - cameraPosition).sqrMagnitude > maxDistanceSqr)
+				continue;
+
+			float distanceRatio = Mathf.Clamp01(Vector3.Distance(((Component)parent).transform.position, cameraPosition) / maxDistance);
+			float hueOffset = Mathf.Repeat(Time.unscaledTime * 0.32f + distanceRatio * 0.35f, 1f);
+			Color configuredColor = ConfigManager.Config.Enemies.HighlightColor;
+			float alpha = Mathf.Clamp01(configuredColor.a);
+
+			Renderer[] renderers = ((Component)parent).GetComponentsInChildren<Renderer>(true);
+			for (int i = 0; i < renderers.Length; i++)
+			{
+				Renderer renderer = renderers[i];
+				// The game disables distant renderers for its own LOD/culling. We can still
+				// draw their mesh here, so only skip inactive objects and non-mesh effects.
+				if ((UnityEngine.Object)(object)renderer == (UnityEngine.Object)null || !((Component)renderer).gameObject.activeInHierarchy || renderer is ParticleSystemRenderer || renderer is TrailRenderer || renderer is LineRenderer)
+					continue;
+
+				// MaterialPropertyBlock is captured per draw call. Setting the shared material
+				// itself made every queued draw use the last color (often the saved red tint).
+				float rendererHue = Mathf.Repeat(hueOffset + i * 0.075f, 1f);
+				Color glowColor = Color.HSVToRGB(rendererHue, 0.95f, 1f);
+				glowColor.a = alpha;
+				_glowProperties.Clear();
+				_glowProperties.SetColor("_Color", glowColor);
+				_glowProperties.SetColor("_TintColor", glowColor);
+				_glowProperties.SetColor("_BaseColor", glowColor);
+				int drawLayer = renderer.gameObject.layer;
+				if ((camera.cullingMask & (1 << drawLayer)) == 0)
+				{
+					drawLayer = 0;
+					if ((camera.cullingMask & 1) == 0)
+						for (int layer = 1; layer < 32; layer++)
+							if ((camera.cullingMask & (1 << layer)) != 0)
+							{
+								drawLayer = layer;
+								break;
+							}
+				}
+
+				SkinnedMeshRenderer skinned = renderer as SkinnedMeshRenderer;
+				if (skinned != null)
+				{
+					if (!_bakedMeshes.TryGetValue(skinned, out Mesh bakedMesh) || (UnityEngine.Object)(object)bakedMesh == (UnityEngine.Object)null)
+					{
+						bakedMesh = new Mesh();
+						bakedMesh.hideFlags = HideFlags.HideAndDontSave;
+						_bakedMeshes[skinned] = bakedMesh;
+					}
+					skinned.BakeMesh(bakedMesh, true);
+					if (bakedMesh.vertexCount > 0)
+						for (int subMesh = 0; subMesh < bakedMesh.subMeshCount; subMesh++)
+						Graphics.DrawMesh(bakedMesh, skinned.transform.localToWorldMatrix, _chamMaterial, drawLayer, camera, subMesh, _glowProperties);
+					continue;
+				}
+
+				MeshFilter meshFilter = renderer.GetComponent<MeshFilter>();
+				if (meshFilter != null && (UnityEngine.Object)(object)meshFilter.sharedMesh != (UnityEngine.Object)null)
+					for (int subMesh = 0; subMesh < meshFilter.sharedMesh.subMeshCount; subMesh++)
+					Graphics.DrawMesh(meshFilter.sharedMesh, renderer.transform.localToWorldMatrix, _chamMaterial, drawLayer, camera, subMesh, _glowProperties);
+			}
+		}
+		CleanupBakedMeshes();
+	}
+
+	private void CleanupBakedMeshes()
+	{
+		List<SkinnedMeshRenderer> deadRenderers = null;
+		foreach (KeyValuePair<SkinnedMeshRenderer, Mesh> entry in _bakedMeshes)
+		{
+			if ((UnityEngine.Object)(object)entry.Key == (UnityEngine.Object)null)
+			{
+				if (deadRenderers == null)
+					deadRenderers = new List<SkinnedMeshRenderer>();
+				deadRenderers.Add(entry.Key);
+				if ((UnityEngine.Object)(object)entry.Value != (UnityEngine.Object)null)
+					UnityEngine.Object.Destroy((UnityEngine.Object)(object)entry.Value);
+			}
+		}
+		if (deadRenderers != null)
+			for (int i = 0; i < deadRenderers.Count; i++)
+				_bakedMeshes.Remove(deadRenderers[i]);
 	}
 
 	private void ApplyChams()
@@ -141,7 +255,7 @@ public class EnemyChams : MonoBehaviour
 			return;
 		}
 		Vector3 referencePosition = GetReferencePosition();
-		float num = Mathf.Clamp(ConfigManager.Config.Enemies.HighlightMaxDistance, 10f, 150f);
+		float num = Mathf.Clamp(ConfigManager.Config.Enemies.HighlightMaxDistance, 10f, 5000f);
 		float num2 = num * num;
 		foreach (EnemyParent item in EnemyDirector.instance.enemiesSpawned)
 		{
@@ -249,9 +363,10 @@ public class EnemyChams : MonoBehaviour
 	public void Refresh()
 	{
 		RemoveChams();
-		if (ConfigManager.Config.Enemies.HighlightEnabled)
+		if (ConfigManager.Config.Enemies.EspEnabled && ConfigManager.Config.Enemies.RenderMethod == 2)
 		{
-			ApplyChams();
+			if ((UnityEngine.Object)(object)_chamMaterial == (UnityEngine.Object)null)
+				CreateChamMaterial();
 		}
 	}
 
@@ -260,6 +375,13 @@ public class EnemyChams : MonoBehaviour
 		if ((UnityEngine.Object)(object)_instance != (UnityEngine.Object)null)
 		{
 			_instance.RemoveChams();
+			foreach (Mesh mesh in _instance._bakedMeshes.Values)
+				if ((UnityEngine.Object)(object)mesh != (UnityEngine.Object)null)
+					UnityEngine.Object.Destroy((UnityEngine.Object)(object)mesh);
+			_instance._bakedMeshes.Clear();
+			if ((UnityEngine.Object)(object)_instance._chamMaterial != (UnityEngine.Object)null)
+				UnityEngine.Object.Destroy((UnityEngine.Object)(object)_instance._chamMaterial);
+			_instance._chamMaterial = null;
 		}
 	}
 }

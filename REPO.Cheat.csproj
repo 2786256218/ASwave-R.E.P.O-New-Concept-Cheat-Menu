@@ -2,28 +2,95 @@
 
   <PropertyGroup>
     <TargetFramework>net48</TargetFramework>
-    <ImplicitUsings>disable</ImplicitUsings>
+    <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
     <Platforms>x64</Platforms>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
     <LangVersion>14.0</LangVersion>
     <AssemblyName>REPO New Cheat</AssemblyName>
     <Product>REPO New Cheat</Product>
     <Title>REPO New Cheat</Title>
-    <Version>2.11.5</Version>
-    <AssemblyVersion>2.11.5.0</AssemblyVersion>
-    <FileVersion>2.11.5.0</FileVersion>
-    <InformationalVersion>2.11.5</InformationalVersion>
-    <RootNamespace>REPO.Cheat</RootNamespace>
-    <DebugSymbols>true</DebugSymbols>
-    <DebugType>embedded</DebugType>
+    <Version>3.25.15</Version>
+    <Description>A cheat menu for REPO</Description>
+    <Copyright>Copyright 漏  2024</Copyright>
+    <AssemblyVersion>3.25.15.0</AssemblyVersion>
+    <FileVersion>3.25.15.0</FileVersion>
+    <InformationalVersion>3.25.15</InformationalVersion>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <Reference>
+      <Private>False</Private>
+    </Reference>
+  </ItemDefinitionGroup>
 
   <ItemGroup>
     <Compile Remove="tmp_types\**\*.cs" />
     <Compile Remove="obj\**\*.cs" />
+    <Compile Remove="decompiled\**\*.cs" />
+    <Compile Remove="Mods\**\*.cs" />
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>Libs\Managed\Unity.TextMeshPro.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>Libs\Managed\UnityEngine.UI.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>Libs\Managed\UnityEngine.UIModule.dll</HintPath>
+    </Reference>
+    <Reference Include="Unity.Postprocessing.Runtime">
+      <HintPath>Libs\Managed\Unity.Postprocessing.Runtime.dll</HintPath>
+    </Reference>
+    <Reference Include="PhotonVoice">
+      <HintPath>Libs\Managed\PhotonVoice.dll</HintPath>
+    </Reference>
+    <Reference Include="PhotonVoice.API">
+      <HintPath>Libs\Managed\PhotonVoice.API.dll</HintPath>
+    </Reference>
+    <Reference Include="PhotonVoice.PUN">
+      <HintPath>Libs\Managed\PhotonVoice.PUN.dll</HintPath>
+    </Reference>
+    <Reference Include="Klattersynth">
+      <HintPath>Libs\Managed\Klattersynth.dll</HintPath>
+    </Reference>
+    <Reference Include="Unity.Localization">
+      <HintPath>Libs\Managed\Unity.Localization.dll</HintPath>
+    </Reference>
+    <Reference Include="Discord.Sdk">
+      <HintPath>Libs\Managed\Discord.Sdk.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.AssetBundleModule">
+      <HintPath>Libs\Managed\UnityEngine.AssetBundleModule.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.VideoModule">
+      <HintPath>Libs\Managed\UnityEngine.VideoModule.dll</HintPath>
+    </Reference>
+    <Reference Include="PhotonRealtime">
+      <HintPath>Libs\Managed\PhotonRealtime.dll</HintPath>
+    </Reference>
+    <Reference Include="PhotonUnityNetworking">
+      <HintPath>Libs\Managed\PhotonUnityNetworking.dll</HintPath>
+    </Reference>
+    <Reference Include="PhotonUnityNetworking.Utilities">
+      <HintPath>Libs\Managed\PhotonUnityNetworking.Utilities.dll</HintPath>
+    </Reference>
+    <Reference Include="websocket-sharp">
+      <HintPath>Libs\Managed\websocket-sharp.dll</HintPath>
+    </Reference>
+    <Reference Include="Unity.VisualScripting.Core">
+      <HintPath>Libs\Managed\Unity.VisualScripting.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="Photon3Unity3D">
+      <HintPath>Libs\Managed\Photon3Unity3D.dll</HintPath>
+    </Reference>
+    <Reference Include="PhotonChat">
+      <HintPath>Libs\Managed\PhotonChat.dll</HintPath>
+    </Reference>
   </ItemGroup>
-
   <ItemGroup>
     <Reference Include="UnityEngine">
       <HintPath>Libs\Managed\UnityEngine.dll</HintPath>

@@ -16,7 +16,9 @@ using Cheat.Features.Compass;
 using Cheat.Features.Visuals;
 using Cheat.Features.ItemSpawner;
 using Cheat.Features.Players;
+using Cheat.Features.Equipment;
 using Cheat.Features.World;
+using Cheat.UI;
 using Cheat.Utils;
 using REPO.Cheat.AuxMenu;
 using REPO.Cheat.UI;
@@ -64,6 +66,13 @@ namespace Cheat
 
             try
             {
+                // Unity's mouse KeyCodes are not consistently reported by GetKeyDown across input backends.
+                int mouseButton = (int)keyCode - (int)KeyCode.Mouse0;
+                if (mouseButton >= 0 && mouseButton <= 6)
+                {
+                    return Input.GetMouseButtonDown(mouseButton);
+                }
+
                 return Input.GetKeyDown(keyCode);
             }
             catch
@@ -119,17 +128,53 @@ namespace Cheat
 
     public class Loader
     {
+        private const string InjectorObjectName = "REPO_New_Cheat_Injector";
         private static GameObject _loadObject;
 
         private static bool _isUnloading;
+
+        private static void DestroyStaleInjectors()
+        {
+            try
+            {
+                GameObject[] allObjects = Resources.FindObjectsOfTypeAll<GameObject>();
+                int removedCount = 0;
+                for (int i = 0; i < allObjects.Length; i++)
+                {
+                    GameObject existing = allObjects[i];
+                    if (existing == null || existing.name != InjectorObjectName)
+                    {
+                        continue;
+                    }
+
+                    if (_loadObject != null && existing == _loadObject)
+                    {
+                        continue;
+                    }
+
+                    UnityEngine.Object.Destroy(existing);
+                    removedCount++;
+                }
+
+                if (removedCount > 0)
+                {
+                    Debug.Log("[REPO New Cheat] Removed stale injector objects: " + removedCount);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.Log("[REPO New Cheat] Failed to cleanup stale injectors: " + ex);
+            }
+        }
 
         public static void Init()
         {
             try
             {
+                DestroyStaleInjectors();
                 if (_loadObject != null) return;
 
-                _loadObject = new GameObject("REPO_New_Cheat_Injector");
+                _loadObject = new GameObject(InjectorObjectName);
                 _loadObject.hideFlags = HideFlags.HideAndDontSave;
                 _loadObject.AddComponent<InjectorBootstrap>();
                 UnityEngine.Object.DontDestroyOnLoad(_loadObject);
@@ -229,10 +274,12 @@ namespace Cheat
         private enum MenuTab
         {
             Player,
+            Skill,
             Esp,
             Spawner,
             Monster,
-            Misc
+            Misc,
+            Aimbot
         }
 
         private enum SpawnerCategory
@@ -431,12 +478,20 @@ namespace Cheat
         private StartupAnimationStyle _activeMenuThemeStyle = StartupAnimationStyle.HolographicScan;
         private StartupAnimationStyle _appliedMenuThemeStyle;
         private float _menuAnimationStartTime;
+        private float _nextRareUpdateTime;
         private const float MenuAnimationDuration = 1f;
         private const float StartupCardAspectRatio = 1.92f;
         private StartupAnimationStyle _activeStartupAnimationStyle = StartupAnimationStyle.HolographicScan;
         private bool _menuVisualsTracked;
 
         private bool _menuInputCaptured;
+
+        private string _activeEspColorPicker;
+        private string _eyedropperTarget;
+        private bool _eyedropperActive;
+        private Texture2D _colorPickerSvTexture;
+        private Texture2D _colorPickerHueTexture;
+        private float _colorPickerTextureHue = -1f;
 
         private bool _cleanupPrepared;
 
@@ -463,6 +518,7 @@ namespace Cheat
         private GUIStyle _startupLightHeaderStyle;
         private GUIStyle _startupLightHintStyle;
         private GUIStyle _startupLightValueStyle;
+        private GUIStyle _scrollViewStyle;
         private Texture2D _windowTexture;
         private Texture2D _headerTexture;
         private Texture2D _panelTexture;
@@ -521,10 +577,120 @@ namespace Cheat
         private bool _hasUnsavedConfigChanges;
         private string _configProfileName = ConfigManager.DefaultProfileName;
         private string _selectedConfigProfile = ConfigManager.DefaultProfileName;
-        private Vector2 _configProfilesScroll;
         private string _configStatusMessage;
+        private string _customMoneyAmountInput = "1000";
+        private string _moneyStatusMessage = string.Empty;
+        private string _customServerNameInput = "中文房间名";
+        private string _serverNameStatusMessage = string.Empty;
+
+        private void ApplyCustomServerName(string newName)
+        {
+            if (string.IsNullOrEmpty(newName))
+            {
+                _serverNameStatusMessage = "名称不能为空。";
+                return;
+            }
+
+            MenuPageServerList[] pages = UnityEngine.Object.FindObjectsByType<MenuPageServerList>((FindObjectsSortMode)0);
+            if (pages != null && pages.Length > 0)
+            {
+                pages[0].ButtonCreateNew();
+                _serverNameStatusMessage = "已打开游戏的创建房间对话框；请在对话框中输入名称并确认。";
+                return;
+            }
+
+            _serverNameStatusMessage = "请先在游戏中进入“创建公共房间”页面！";
+        }
+
+        private void GenerateMoney(int amount)
+        {
+            if (SemiFunc.IsMasterClientOrSingleplayer())
+            {
+                SemiFunc.StatSetRunCurrency(SemiFunc.StatGetRunCurrency() + amount);
+                CurrencyUI.instance.FetchCurrency();
+                _moneyStatusMessage = $"已成功添加 {amount} 金币。";
+            }
+            else
+            {
+                // 非房主通过游戏内金币购买流程处理请求。
+                CosmeticShopMachine[] machines = UnityEngine.Object.FindObjectsByType<CosmeticShopMachine>((FindObjectsSortMode)0);
+                CosmeticShopMachine machine = null;
+                if (machines != null && machines.Length > 0)
+                {
+                    machine = machines[0];
+                }
+
+                if (machine == null)
+                {
+                    _moneyStatusMessage = "当前场景没有可用的饰品机，无法添加金币。";
+                    return;
+                }
+
+                PhotonView pv = machine.GetComponent<PhotonView>();
+                if (pv == null)
+                {
+                    _moneyStatusMessage = "饰品机暂时无法使用。";
+                    return;
+                }
+
+                // 计算需要的最高级代币次数 (UltraRare 每次给 15 金币)
+                // 要求 15 的倍数
+                int adjustedAmount = amount;
+                if (adjustedAmount % 15 != 0)
+                {
+                    adjustedAmount = Mathf.Max(15, (adjustedAmount / 15) * 15);
+                    _moneyStatusMessage = $"输入的金额不是 15 的倍数，已自动调整为 {adjustedAmount}。";
+                }
+
+                int requiredTokens = adjustedAmount / 15;
+
+                // 发起携程执行多次伪造请求
+                StartCoroutine(GenerateMoneyClientRoutine(pv, requiredTokens));
+            }
+        }
+
+        private System.Collections.IEnumerator GenerateMoneyClientRoutine(PhotonView machinePv, int times)
+        {
+            _moneyStatusMessage = $"正在处理金币请求，剩余 {times} 次...";
+            int delayFrames = 0;
+            
+            for (int i = 0; i < times; i++)
+            {
+                if (machinePv == null) break;
+
+                // 1. 发送交互请求，假装我们投入了一枚最高级代币 (UltraRare = 3)
+                machinePv.RPC("InteractClientRPC", RpcTarget.MasterClient, 3);
+                
+                // 稍作等待，让主机状态机更新到 FetchReward 状态
+                delayFrames = 3;
+                while (delayFrames > 0)
+                {
+                    delayFrames--;
+                    yield return null;
+                }
+
+                // 2. 发送获取奖励结果 RPC，传入 -1 代表没有可用饰品了，这会迫使主机走发钱流程
+                machinePv.RPC("RewardFetchClientRPC", RpcTarget.MasterClient, -1);
+
+                // 3. 强制让主机跳过动画延迟
+                // CosmeticShopMachine 中的 UpdateStateRPC 可以被用来强制跳转状态
+                // 强制直接跳转到 Idle (0) 或下一个所需的状态，从而跳过长达几秒的动画演出
+                machinePv.RPC("UpdateStateRPC", RpcTarget.MasterClient, 0);
+
+                // 由于直接跳转了状态机，我们可以极大地缩短本地的等待时间
+                delayFrames = 2;
+                while (delayFrames > 0)
+                {
+                    delayFrames--;
+                    yield return null;
+                }
+            }
+
+            _moneyStatusMessage = "金币请求已处理，请查看余额。";
+        }
+
         private static readonly string[] MinimapRenderModeLabels = new string[3] { "图标模式", "纯地图", "轮廓高亮" };
-        private static readonly string[] EnemyRenderMethodLabels = new string[4] { "角框", "GL 方框", "线框渲染", "实线方框" };
+        private static readonly string[] EnemyRenderMethodLabels = new string[3] { "四角框", "方框", "发光" };
         private static readonly string[] ColorPresetLabels = new string[6] { "红色", "绿色", "青色", "黄色", "粉色", "白色" };
         private static readonly Color[] ColorPresets = new Color[6]
         {
@@ -544,6 +710,7 @@ namespace Cheat
                 Cheat.Config.ConfigManager.Init();
                 InitializeConfigProfileUi();
                 ApplyLoadedConfigState();
+                VersionUpdateChecker.CheckOnStartupOnce();
                 
                 // Initialize REPO cheat components
                 gameObject.AddComponent<Minimap>();
@@ -566,7 +733,26 @@ namespace Cheat
         {
             try
             {
-                Stopwatch stopwatch = Stopwatch.StartNew();
+                if (_eyedropperActive)
+                {
+                    EnsureMenuCursorState();
+                    if (PlayerController.instance != null)
+                        PlayerController.instance.InputDisable(0.15f);
+
+                    if (Input.GetKeyDown(KeyCode.Escape))
+                    {
+                        CancelEspEyedropper();
+                    }
+                    else if (Input.GetMouseButtonDown(0))
+                    {
+                        Vector2 samplePosition = Input.mousePosition;
+                        StartCoroutine(CaptureEspEyedropperColor(samplePosition));
+                    }
+                    return;
+                }
+
+                bool runtimeDebugEnabled = LocalPlayerManager.IsRuntimeDebugEnabled();
+                Stopwatch stopwatch = runtimeDebugEnabled ? Stopwatch.StartNew() : null;
                 if (HotkeyPoller.TogglePressed(GetEffectiveMenuToggleKey()))
                 {
                     ToggleMenu();
@@ -579,6 +765,9 @@ namespace Cheat
                 }
 
                 HandleFeatureHotkeys();
+
+                if (ConfigManager.Config != null && ConfigManager.Config.Enemies.EspEnabled && ConfigManager.Config.Enemies.RenderMethod == 2)
+                    _ = EnemyChams.Instance;
 
                 if (_isOpeningMenu)
                 {
@@ -606,29 +795,53 @@ namespace Cheat
                     MonsterSpawner.Instance.SetBackgroundRefreshEnabled((_showMenu || _isOpeningMenu) && _selectedTab == MenuTab.Monster);
                 }
 
-                Stopwatch stopwatch2 = Stopwatch.StartNew();
+                Stopwatch stopwatch2 = runtimeDebugEnabled ? Stopwatch.StartNew() : null;
                 EnemyManager.Update();
-                stopwatch2.Stop();
-                Stopwatch stopwatch3 = Stopwatch.StartNew();
+                stopwatch2?.Stop();
+                Stopwatch stopwatch3 = runtimeDebugEnabled ? Stopwatch.StartNew() : null;
                 LootManager.Update();
-                stopwatch3.Stop();
-                Stopwatch stopwatch4 = Stopwatch.StartNew();
+                stopwatch3?.Stop();
+                Stopwatch stopwatch4 = runtimeDebugEnabled ? Stopwatch.StartNew() : null;
                 LocalPlayerManager.Update();
-                stopwatch4.Stop();
+                stopwatch4?.Stop();
+                Stopwatch stopwatch5 = runtimeDebugEnabled ? Stopwatch.StartNew() : null;
+                if (Time.unscaledTime >= _nextRareUpdateTime)
+                {
+                    _nextRareUpdateTime = Time.unscaledTime + 0.2f;
+                    LocalPlayerManager.UpdateRare();
+                }
+                stopwatch5?.Stop();
+                Stopwatch stopwatch6 = runtimeDebugEnabled ? Stopwatch.StartNew() : null;
                 PlayerAdminManager.Update();
+                stopwatch6?.Stop();
+                Stopwatch stopwatch7 = runtimeDebugEnabled ? Stopwatch.StartNew() : null;
                 FreeCam.Update();
                 LaserSight.Update();
-                stopwatch.Stop();
-                if (LocalPlayerManager.IsRuntimeDebugEnabled() && (stopwatch.Elapsed.TotalMilliseconds >= 8.0 || stopwatch2.Elapsed.TotalMilliseconds >= 3.0 || stopwatch3.Elapsed.TotalMilliseconds >= 3.0 || stopwatch4.Elapsed.TotalMilliseconds >= 3.0))
+                ReferenceExperienceManager.Update();
+                stopwatch7?.Stop();
+                stopwatch?.Stop();
+                if (runtimeDebugEnabled && stopwatch != null && stopwatch2 != null && stopwatch3 != null && stopwatch4 != null && stopwatch5 != null && stopwatch6 != null && stopwatch7 != null && (stopwatch.Elapsed.TotalMilliseconds >= 8.0 || stopwatch2.Elapsed.TotalMilliseconds >= 3.0 || stopwatch3.Elapsed.TotalMilliseconds >= 3.0 || stopwatch4.Elapsed.TotalMilliseconds >= 3.0 || stopwatch5.Elapsed.TotalMilliseconds >= 2.0 || stopwatch6.Elapsed.TotalMilliseconds >= 2.0 || stopwatch7.Elapsed.TotalMilliseconds >= 2.0))
                 {
                     #region debug-point B:program-update-spike
-                    LocalPlayerManager.DebugReport("B", "Program.Update", "主循环检测到尖峰帧", "frameMs=" + stopwatch.Elapsed.TotalMilliseconds.ToString("F2") + ",enemyMs=" + stopwatch2.Elapsed.TotalMilliseconds.ToString("F2") + ",lootMs=" + stopwatch3.Elapsed.TotalMilliseconds.ToString("F2") + ",localMs=" + stopwatch4.Elapsed.TotalMilliseconds.ToString("F2") + ",menuVisible=" + _showMenu + ",opening=" + _isOpeningMenu);
+                    LocalPlayerManager.DebugReport("B", "Program.Update", "主循环检测到尖峰帧", "frameMs=" + stopwatch.Elapsed.TotalMilliseconds.ToString("F2") + ",enemyMs=" + stopwatch2.Elapsed.TotalMilliseconds.ToString("F2") + ",lootMs=" + stopwatch3.Elapsed.TotalMilliseconds.ToString("F2") + ",localMs=" + stopwatch4.Elapsed.TotalMilliseconds.ToString("F2") + ",localRareMs=" + stopwatch5.Elapsed.TotalMilliseconds.ToString("F2") + ",playerAdminMs=" + stopwatch6.Elapsed.TotalMilliseconds.ToString("F2") + ",utilityMs=" + stopwatch7.Elapsed.TotalMilliseconds.ToString("F2") + ",menuVisible=" + _showMenu + ",opening=" + _isOpeningMenu);
                     #endregion
                 }
             }
             catch (Exception ex)
             {
                 Debug.Log($"[REPO New Cheat] Error in Update: {ex}");
+            }
+        }
+
+        private void FixedUpdate()
+        {
+            try
+            {
+                LocalPlayerManager.FixedUpdate();
+            }
+            catch (Exception ex)
+            {
+                Debug.Log($"[REPO New Cheat] Error in FixedUpdate: {ex}");
             }
         }
 
@@ -645,6 +858,7 @@ namespace Cheat
         {
             try
             {
+                Stopwatch stopwatch = LocalPlayerManager.IsRuntimeDebugEnabled() ? Stopwatch.StartNew() : null;
                 if ((_showMenu || _isOpeningMenu) && _whiteTexture != null)
                 {
                     DrawFullscreenThemeBackground();
@@ -680,6 +894,21 @@ namespace Cheat
                 if (Event.current.type == EventType.Repaint)
                 {
                     DrawRepoOverlays();
+                    DrawAimbotFov();
+                }
+
+                if (_eyedropperActive)
+                    DrawEspEyedropperOverlay();
+
+                if (stopwatch != null)
+                {
+                    stopwatch.Stop();
+                    if (stopwatch.Elapsed.TotalMilliseconds >= 4.0)
+                    {
+                        #region debug-point B:program-ongui-spike
+                        LocalPlayerManager.DebugReport("B", "Program.OnGUI", "OnGUI 检测到尖峰帧", "onGuiMs=" + stopwatch.Elapsed.TotalMilliseconds.ToString("F2") + ",eventType=" + Event.current.type + ",menuVisible=" + _showMenu + ",opening=" + _isOpeningMenu);
+                        #endregion
+                    }
                 }
             }
             catch (Exception ex)
@@ -710,6 +939,7 @@ namespace Cheat
             Cheat.Features.Loot.LootManager.Cleanup();
             Cheat.Features.Enemies.EnemyManager.Cleanup();
             Cheat.Features.LocalPlayer.LocalPlayerManager.Cleanup();
+            ReferenceExperienceManager.Reset();
             PlayerAdminManager.Cleanup();
         }
 
@@ -1050,6 +1280,16 @@ namespace Cheat
             _textFieldStyle.padding = new RectOffset(8, 8, 8, 8);
             _textFieldStyle.margin = new RectOffset(4, 4, 4, 4);
 
+            _scrollViewStyle = new GUIStyle(GUI.skin.scrollView);
+            // 优化滚动视图性能，去掉不必要的重绘背景和内边距，避免滚动区裁剪异常。
+            _scrollViewStyle.normal.background = null;
+            _scrollViewStyle.hover.background = null;
+            _scrollViewStyle.active.background = null;
+            _scrollViewStyle.focused.background = null;
+            _scrollViewStyle.border = new RectOffset(0, 0, 0, 0);
+            _scrollViewStyle.padding = new RectOffset(0, 0, 0, 0);
+            _scrollViewStyle.margin = new RectOffset(0, 0, 0, 0);
+
             _resizeHandleStyle = new GUIStyle(GUI.skin.label);
             _resizeHandleStyle.normal.background = _resizeHandleTexture;
         }
@@ -1214,8 +1454,8 @@ namespace Cheat
             switch (style)
             {
                 case StartupAnimationStyle.HackerMatrix:
-                    theme.DisplayName = "黑客矩阵风";
-                    theme.Description = "黑绿终端、二进制雨幕与代码逻辑块共同构成神秘黑客科技感。";
+                    theme.DisplayName = "黑绿矩阵风";
+                    theme.Description = "黑绿配色与动态背景，呈现简洁醒目的暗色风格。";
                     theme.IsDark = true;
                     theme.PrimaryText = new Color(0.82f, 1.00f, 0.86f);
                     theme.MutedText = new Color(0.52f, 0.86f, 0.58f);
@@ -1347,7 +1587,7 @@ namespace Cheat
                     break;
                 case StartupAnimationStyle.HolographicScan:
                     theme.DisplayName = "科技风";
-                    theme.Description = "霓虹蓝 HUD、电路纹理与扫描流光共同构成未来科技感。";
+                    theme.Description = "蓝色光效与电路纹理，呈现明亮的未来风格。";
                     theme.IsDark = true;
                     theme.PrimaryText = new Color(0.90f, 0.96f, 1.00f);
                     theme.MutedText = new Color(0.70f, 0.82f, 0.90f);
@@ -2033,7 +2273,7 @@ namespace Cheat
             ConfigData config = Cheat.Config.ConfigManager.Config;
             if (config == null)
             {
-                GUILayout.Label("配置尚未初始化。", _labelStyle);
+                GUILayout.Label("设置暂不可用，请稍后重试。", _labelStyle);
                 GUI.DragWindow(new Rect(0, 0, 10000, 22));
                 return;
             }
@@ -2052,6 +2292,12 @@ namespace Cheat
             if (DrawTabButton("玩家", MenuTab.Player))
             {
                 _selectedTab = MenuTab.Player;
+                _scrollPosition = Vector2.zero;
+            }
+
+            if (DrawTabButton("技能", MenuTab.Skill))
+            {
+                _selectedTab = MenuTab.Skill;
                 _scrollPosition = Vector2.zero;
             }
 
@@ -2075,15 +2321,26 @@ namespace Cheat
                 _selectedTab = MenuTab.Misc;
                 _scrollPosition = Vector2.zero;
             }
+
+            if (DrawTabButton("自瞄", MenuTab.Aimbot))
+            {
+                _selectedTab = MenuTab.Aimbot;
+                _scrollPosition = Vector2.zero;
+            }
+
             GUILayout.EndHorizontal();
 
             GUILayout.Space(12);
 
-            _scrollPosition = GUILayout.BeginScrollView(_scrollPosition);
+            _scrollPosition = GUILayout.BeginScrollView(_scrollPosition, false, false, GUI.skin.horizontalScrollbar, GUI.skin.verticalScrollbar, _scrollViewStyle);
 
             if (_selectedTab == MenuTab.Player)
             {
                 DrawPlayerPage(config, ref configChanged);
+            }
+            else if (_selectedTab == MenuTab.Skill)
+            {
+                DrawSkillPage(config, ref configChanged);
             }
             else if (_selectedTab == MenuTab.Esp)
             {
@@ -2097,9 +2354,13 @@ namespace Cheat
             {
                 DrawMonsterPage();
             }
-            else
+            else if (_selectedTab == MenuTab.Misc)
             {
                 DrawMiscPage(config, ref configChanged);
+            }
+            else if (_selectedTab == MenuTab.Aimbot)
+            {
+                DrawAimbotPage(config, ref configChanged);
             }
 
             GUILayout.EndScrollView();
@@ -2191,7 +2452,7 @@ namespace Cheat
             DrawHeaderThemeOverlay(rect);
             GUI.Label(new Rect(rect.x + 18f, rect.y + 9f, rect.width - 36f, 32f), "REPO Cheat Menu By ASwave", _headerStyle);
             GUI.Label(new Rect(rect.x + 18f, rect.y + 14f, rect.width - 36f, 14f), CurrentMenuVersion, _versionStyle);
-            GUI.Label(new Rect(rect.x + 18f, rect.y + 46f, rect.width - 36f, 24f), "Ins 打开或关闭菜单，End 卸载辅助。", _hintStyle);
+            GUI.Label(new Rect(rect.x + 18f, rect.y + 46f, rect.width - 36f, 24f), "Ins 打开或关闭菜单，End 关闭菜单模块。", _hintStyle);
         }
 
         private void BeginPanel(string title, string description)
@@ -2207,7 +2468,7 @@ namespace Cheat
 
         private void DrawPlayerPage(ConfigData config, ref bool configChanged)
         {
-            BeginPanel("生存控制", "常用角色状态开关，适合快速调整人物生存能力。");
+            BeginPanel("本地角色快捷功能", "快速调整角色状态与移动方式。");
             if (DrawActionButton("复活自己"))
             {
                 PlayerAvatar localAvatar = PlayerController.instance?.playerAvatarScript;
@@ -2216,6 +2477,28 @@ namespace Cheat
                     PlayerAdminManager.RevivePlayer(localAvatar);
                 }
             }
+            GUILayout.EndVertical();
+
+            BeginPanel("全局设置", "调整会影响整局游戏的选项。");
+            configChanged |= ToggleConfig(ref config.GameModifiers.AllTeammatesGodMode, ref config.GameModifiers.AllTeammatesGodModeKey, "队友共享无敌（各客户端启用）");
+            configChanged |= ToggleConfig(ref config.GameModifiers.InfiniteWeaponBattery, ref config.GameModifiers.InfiniteWeaponBatteryKey, "所有武器无限能量");
+            configChanged |= ToggleConfig(ref config.GameModifiers.InfiniteChargingStation, ref config.GameModifiers.InfiniteChargingStationKey, "无限充电站容量");
+            configChanged |= ToggleConfig(ref config.GameModifiers.ChargingStationHeal, ref config.GameModifiers.ChargingStationHealKey, "充电站支持回血");
+            GUILayout.Label("当前版本不支持柱子掉落倍率和队友掉落碎片。", _hintStyle);
+            configChanged |= ToggleConfig(ref config.GameModifiers.AutoReviveTeammates, ref config.GameModifiers.AutoReviveTeammatesKey, "自动复活队友");
+            configChanged |= ToggleConfig(ref config.GameModifiers.AutoReviveWhenSeen, ref config.GameModifiers.AutoReviveWhenSeenKey, "仅当被注视时自动复活");
+            configChanged |= ToggleConfig(ref config.GameModifiers.ReviveHeadOnTruck, ref config.GameModifiers.ReviveHeadOnTruckKey, "复活头颅传送至货车");
+            configChanged |= ToggleConfig(ref config.GameModifiers.ReviveHeadOnExtraction, ref config.GameModifiers.ReviveHeadOnExtractionKey, "复活头颅传送至撤离点");
+            configChanged |= ToggleConfig(ref config.GameModifiers.ReviveHeadOnCart, ref config.GameModifiers.ReviveHeadOnCartKey, "复活头颅传送至推车");
+            configChanged |= ToggleConfig(ref config.GameModifiers.ReviveAutoToTruck, ref config.GameModifiers.ReviveAutoToTruckKey, "复活后自动传送到货车");
+            configChanged |= ToggleConfig(ref config.GameModifiers.DeathAutoToTruck, ref config.GameModifiers.DeathAutoToTruckKey, "死亡后自动传送到货车");
+            configChanged |= ToggleConfig(ref config.GameModifiers.DeathAutoToExtraction, ref config.GameModifiers.DeathAutoToExtractionKey, "死亡后自动传送到撤离点");
+            configChanged |= DrawSliderField("怪物生成速率倍率", ref config.GameModifiers.SpawnRateMultiplier, 0.1f, 10f, "x", "F1");
+            configChanged |= ToggleConfig(ref config.GameModifiers.LimitActionAndOvercharge, ref config.GameModifiers.LimitActionAndOverchargeKey, "禁用抓取过载");
+            GUILayout.Label("多人游戏中，部分选项由房主控制。队友需自行开启无敌；武器电池设置只影响你能使用的物品。", _hintStyle);
+            GUILayout.EndVertical();
+
+            BeginPanel("生存控制", "按需调整生命、体力等角色状态。");
             configChanged |= ToggleConfig(ref config.Local.InfiniteStamina, ref config.Local.InfiniteStaminaKey, "无限体力");
             configChanged |= ToggleConfig(ref config.Local.InfiniteBattery, ref config.Local.InfiniteBatteryKey, "无限电池");
             configChanged |= DrawLocalFeatureSwitch("上帝模式", ref config.Local.GodMode, ref config.Local.GodModeKey);
@@ -2233,15 +2516,28 @@ namespace Cheat
                 configChanged |= DrawSliderField("自由视角加速倍率", ref config.Local.FreeCamFastMultiplier, 1f, 6f, "x", "F1");
                 configChanged |= DrawSliderField("自由视角灵敏度", ref config.Local.FreeCamSensitivity, 0.1f, 10f, "x", "F1");
             }
+            configChanged |= DrawLocalFeatureSwitch("第三人称视角", ref config.Local.ThirdPerson, ref config.Local.ThirdPersonKey);
+            if (config.Local.ThirdPerson)
+            {
+                configChanged |= DrawSliderField("第三人称距离", ref config.Local.ThirdPersonDistance, 0.5f, 10f, "m", "F1");
+                configChanged |= DrawSliderField("第三人称高度", ref config.Local.ThirdPersonHeight, -2f, 5f, "m", "F1");
+                configChanged |= DrawSliderField("第三人称水平偏移", ref config.Local.ThirdPersonHorizontal, -3f, 3f, "m", "F1");
+                configChanged |= DrawSliderField("第三人称模型缩放", ref config.Local.ThirdPersonModelScale, 0.1f, 3f, "x", "F1");
+            }
 
             GUILayout.EndVertical();
 
-            BeginPanel("移动增强", "增强移动与跳跃表现，穿墙模式会自动防摔并支持垂直移动。");
+            BeginPanel("移动增强", "调整移动速度、跳跃能力与移动方式。");
             if (config.Local.NoClip)
             {
                 configChanged |= DrawSliderField("穿墙速度", ref config.Local.NoClipSpeed, 1f, 50f, "x", "F1");
                 configChanged |= DrawSliderField("穿墙加速倍率", ref config.Local.NoClipFastMultiplier, 1f, 6f, "x", "F1");
                 GUILayout.Label("Shift 加速，空格上升，Ctrl 下降，启用时自动压制摔倒与失控下落。", _hintStyle);
+            }
+            configChanged |= ToggleConfig(ref config.Local.TumbleFly, ref config.Local.TumbleFlyKey, "摔倒状态下飞行");
+            if (config.Local.TumbleFly)
+            {
+                GUILayout.Label("摔倒时按 WASD 控制水平飞行，空格上升，左Ctrl下降，左Shift加速。", _hintStyle);
             }
             configChanged |= ToggleConfig(ref config.Local.RunSpeedEnabled, ref config.Local.RunSpeedEnabledKey, "启用奔跑速度倍率");
             if (config.Local.RunSpeedEnabled)
@@ -2265,11 +2561,11 @@ namespace Cheat
             configChanged |= DrawSliderField("抓取力量", ref config.Local.GrabStrength, 1f, 5f, "x", "F1");
             GUILayout.EndVertical();
 
-            BeginPanel("在线队友", "显示当前房间在线玩家信息、生还状态，并支持单人加满血、全图加血与复活。");
+            BeginPanel("在线队友", "查看在线玩家状态，并使用治疗、复活等功能。");
             List<PlayerAdminManager.PlayerRecord> onlinePlayers = PlayerAdminManager.GetOnlinePlayers();
             GUILayout.Label($"当前在线玩家: {onlinePlayers.Count}", _hintStyle, Array.Empty<GUILayoutOption>());
             GUILayout.BeginHorizontal(Array.Empty<GUILayoutOption>());
-            if (DrawActionButton("全图玩家加满血"))
+            if (DrawActionButton("一键为所有玩家加血"))
             {
                 PlayerAdminManager.HealAllPlayers();
             }
@@ -2278,7 +2574,13 @@ namespace Cheat
             {
                 PlayerAdminManager.ReviveAllDeadPlayers();
             }
+            GUILayout.EndHorizontal();
 
+            GUILayout.BeginHorizontal(Array.Empty<GUILayoutOption>());
+            if (DrawActionButton("将全部玩家拉到身边"))
+            {
+                PlayerAdminManager.TeleportAllPlayersToMe();
+            }
             GUILayout.EndHorizontal();
             if (!string.IsNullOrEmpty(PlayerAdminManager.LastStatus))
             {
@@ -2302,53 +2604,78 @@ namespace Cheat
 
         private void DrawOnlinePlayerEntry(PlayerAdminManager.PlayerRecord player)
         {
-            GUILayout.BeginHorizontal(Array.Empty<GUILayoutOption>());
             GUILayout.BeginVertical(Array.Empty<GUILayoutOption>());
             string label = player.IsLocal ? player.DisplayName + " (本地)" : player.DisplayName;
-            GUILayout.Label(label, _labelStyle, Array.Empty<GUILayoutOption>());
+            GUILayout.Label(label, _labelStyle, GUILayout.ExpandWidth(true));
             GUILayout.Label(GetOnlinePlayerSubtext(player), _hintStyle, Array.Empty<GUILayoutOption>());
-            GUILayout.EndVertical();
-            GUILayout.FlexibleSpace();
 
-            if (player.IsLocal)
+            GUILayout.BeginHorizontal(Array.Empty<GUILayoutOption>());
+            if (DrawActionButton("普通代币"))
             {
-                if (DrawActionButton("普通代币", GUILayout.Width(76f)))
-                {
-                    PlayerAdminManager.AddCosmeticTokenForPlayer(SemiFunc.Rarity.Common, player.Avatar);
-                }
-                if (DrawActionButton("罕见代币", GUILayout.Width(76f)))
-                {
-                    PlayerAdminManager.AddCosmeticTokenForPlayer(SemiFunc.Rarity.Uncommon, player.Avatar);
-                }
-                if (DrawActionButton("稀有代币", GUILayout.Width(76f)))
-                {
-                    PlayerAdminManager.AddCosmeticTokenForPlayer(SemiFunc.Rarity.Rare, player.Avatar);
-                }
-                if (DrawActionButton("超稀代币", GUILayout.Width(76f)))
-                {
-                    PlayerAdminManager.AddCosmeticTokenForPlayer(SemiFunc.Rarity.UltraRare, player.Avatar);
-                }
+                PlayerAdminManager.AddCosmeticTokenForPlayer(SemiFunc.Rarity.Common, player.Avatar);
             }
+            if (DrawActionButton("罕见代币"))
+            {
+                PlayerAdminManager.AddCosmeticTokenForPlayer(SemiFunc.Rarity.Uncommon, player.Avatar);
+            }
+            GUILayout.EndHorizontal();
 
+            GUILayout.BeginHorizontal(Array.Empty<GUILayoutOption>());
+            if (DrawActionButton("稀有代币"))
+            {
+                PlayerAdminManager.AddCosmeticTokenForPlayer(SemiFunc.Rarity.Rare, player.Avatar);
+            }
+            if (DrawActionButton("超稀代币"))
+            {
+                PlayerAdminManager.AddCosmeticTokenForPlayer(SemiFunc.Rarity.UltraRare, player.Avatar);
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal(Array.Empty<GUILayoutOption>());
             bool canHeal = player.IsAlive && player.MaxHealth > 0 && player.CurrentHealth < player.MaxHealth;
-            if (DrawActionButton(canHeal ? "加满血" : (player.IsAlive ? "已满血" : "不可加血"), GUILayout.Width(96f)) && canHeal)
+            if (DrawActionButton(canHeal ? "加满血" : (player.IsAlive ? "已满血" : "不可加血")) && canHeal)
             {
                 PlayerAdminManager.HealPlayer(player.Avatar);
             }
 
             if (player.IsAlive)
             {
-                if (DrawActionButton("杀死该队友", GUILayout.Width(96f)))
+                if (DrawActionButton("杀死该队友"))
                 {
                     PlayerAdminManager.KillPlayer(player.Avatar);
                 }
             }
-            else if (DrawActionButton("复活该队友", GUILayout.Width(96f)))
+            else if (DrawActionButton("复活该队友"))
             {
                 PlayerAdminManager.RevivePlayer(player.Avatar);
             }
-
             GUILayout.EndHorizontal();
+
+            if (!player.IsLocal)
+            {
+                GUILayout.BeginHorizontal(Array.Empty<GUILayoutOption>());
+                if (player.IsAlive)
+                {
+                    if (DrawActionButton("拉到身边"))
+                    {
+                        PlayerAdminManager.TeleportPlayerToMe(player.Avatar);
+                    }
+                    if (DrawActionButton("传送到TA身边"))
+                    {
+                        PlayerAdminManager.TeleportMeToPlayer(player.Avatar);
+                    }
+                }
+                else
+                {
+                    if (DrawActionButton("不可传送 (已死亡)"))
+                    {
+                        PlayerAdminManager.LastStatus = $"`{player.DisplayName}` 已经死亡，无法传送。";
+                    }
+                }
+                GUILayout.EndHorizontal();
+            }
+
+            GUILayout.EndVertical();
             GUILayout.Space(4f);
         }
 
@@ -2363,6 +2690,54 @@ namespace Cheat
             return $"{state} | 血量未知";
         }
 
+        private void DrawSkillPage(ConfigData config, ref bool configChanged)
+        {
+            BeginPanel("技能等级修改", "自定义各个技能等级，修改后点击应用生效。最高通常可调至99级。");
+
+            float stamina = config.Skills.Stamina;
+            float health = config.Skills.Health;
+            float tumbleWings = config.Skills.TumbleWings;
+            float crouchRest = config.Skills.CrouchRest;
+            float deathHeadBattery = config.Skills.DeathHeadBattery;
+            float launch = config.Skills.Launch;
+            float mapPlayerCount = config.Skills.MapPlayerCount;
+            float throwStr = config.Skills.Throw;
+            float tumbleClimb = config.Skills.TumbleClimb;
+
+            bool localChanged = false;
+            localChanged |= DrawSliderField("体力上限", ref stamina, 0f, 99f, "级", "F0");
+            localChanged |= DrawSliderField("生命上限", ref health, 0f, 99f, "级", "F0");
+            localChanged |= DrawSliderField("滑翔翅膀", ref tumbleWings, 0f, 99f, "级", "F0");
+            localChanged |= DrawSliderField("蹲下休息", ref crouchRest, 0f, 99f, "级", "F0");
+            localChanged |= DrawSliderField("复活电池", ref deathHeadBattery, 0f, 99f, "级", "F0");
+            localChanged |= DrawSliderField("大扑起跳", ref launch, 0f, 99f, "级", "F0");
+            localChanged |= DrawSliderField("终端雷达", ref mapPlayerCount, 0f, 99f, "级", "F0");
+            localChanged |= DrawSliderField("丢物力量", ref throwStr, 0f, 99f, "级", "F0");
+            localChanged |= DrawSliderField("攀爬速度", ref tumbleClimb, 0f, 99f, "级", "F0");
+
+            if (localChanged)
+            {
+                config.Skills.Stamina = Mathf.RoundToInt(stamina);
+                config.Skills.Health = Mathf.RoundToInt(health);
+                config.Skills.TumbleWings = Mathf.RoundToInt(tumbleWings);
+                config.Skills.CrouchRest = Mathf.RoundToInt(crouchRest);
+                config.Skills.DeathHeadBattery = Mathf.RoundToInt(deathHeadBattery);
+                config.Skills.Launch = Mathf.RoundToInt(launch);
+                config.Skills.MapPlayerCount = Mathf.RoundToInt(mapPlayerCount);
+                config.Skills.Throw = Mathf.RoundToInt(throwStr);
+                config.Skills.TumbleClimb = Mathf.RoundToInt(tumbleClimb);
+                configChanged = true;
+            }
+
+            GUILayout.Space(8f);
+            if (DrawActionButton("应用技能修改"))
+            {
+                LocalPlayerManager.ApplySkillModifications();
+            }
+
+            GUILayout.EndVertical();
+        }
+
         private void DrawEspPage(ConfigData config, ref bool configChanged)
         {
             BeginPanel("玩家透视", "显示其他玩家信息。");
@@ -2372,8 +2747,22 @@ namespace Cheat
                 configChanged |= ToggleConfig(ref config.PlayerEsp.DrawName, ref config.PlayerEsp.DrawNameKey, "显示名字", "player-esp-name");
                 configChanged |= ToggleConfig(ref config.PlayerEsp.DrawHealth, ref config.PlayerEsp.DrawHealthKey, "显示血量", "player-esp-health");
                 configChanged |= ToggleConfig(ref config.PlayerEsp.DrawDistance, ref config.PlayerEsp.DrawDistanceKey, "显示距离", "player-esp-distance");
+                configChanged |= ToggleConfig(ref config.PlayerEsp.DrawLine, ref config.PlayerEsp.DrawLineKey, "显示射线", "player-esp-line");
                 configChanged |= ToggleConfig(ref config.PlayerEsp.DrawHeldItem, ref config.PlayerEsp.DrawHeldItemKey, "显示手持物品", "player-esp-held-item");
-                GUILayout.Label("玩家信息固定蓝色，玩家装备固定黄色。", _hintStyle);
+                GUILayout.Label("玩家与手持物品的颜色可在本页底部调整。", _hintStyle);
+            }
+            GUILayout.EndVertical();
+
+            BeginPanel("玩家装备与武器", "标记地图中散落的玩家装备和武器；正在手持或已装备的物品会自动排除。");
+            configChanged |= ToggleConfig(ref config.PlayerEquipmentEsp.Enabled, ref config.PlayerEquipmentEsp.ToggleKey, "启用玩家装备透视", "player-equipment-esp-enabled");
+            if (config.PlayerEquipmentEsp.Enabled)
+            {
+                configChanged |= ToggleConfig(ref config.PlayerEquipmentEsp.DrawBox, ref config.PlayerEquipmentEsp.DrawBoxKey, "绘制方框");
+                configChanged |= ToggleConfig(ref config.PlayerEquipmentEsp.DrawName, ref config.PlayerEquipmentEsp.DrawNameKey, "显示名称");
+                configChanged |= ToggleConfig(ref config.PlayerEquipmentEsp.DrawDistance, ref config.PlayerEquipmentEsp.DrawDistanceKey, "显示距离");
+                configChanged |= ToggleConfig(ref config.PlayerEquipmentEsp.DrawTracers, ref config.PlayerEquipmentEsp.DrawTracersKey, "绘制射线");
+                configChanged |= DrawSliderField("最大显示距离", ref config.PlayerEquipmentEsp.MaxDistance, 10f, 1000f, "m", "F0");
+                GUILayout.Label("颜色可在本页底部调整。", _hintStyle);
             }
             GUILayout.EndVertical();
 
@@ -2389,26 +2778,14 @@ namespace Cheat
                 configChanged |= ToggleConfig(ref config.Enemies.DrawStatus, ref config.Enemies.DrawStatusKey, "显示状态", "enemy-esp-status");
                 configChanged |= ToggleConfig(ref config.Enemies.DrawPath, ref config.Enemies.DrawPathKey, "绘制路径", "enemy-esp-path");
                 configChanged |= ToggleConfig(ref config.Enemies.TargetWarning, ref config.Enemies.TargetWarningKey, "目标警告", "enemy-esp-warning");
+                configChanged |= ToggleConfig(ref config.Enemies.VisibilityCheck, ref config.Enemies.VisibilityCheckKey, "检测敌人露出", "enemy-esp-visibility");
                 configChanged |= DrawSliderField("最大显示距离", ref config.Enemies.MaxDistance, 10f, 1000f, "m", "F0");
-                GUILayout.Label("方框样式: " + GetEnemyRenderMethodLabel(config.Enemies.RenderMethod), _hintStyle);
-                if (DrawActionButton("切换方框样式"))
-                {
-                    config.Enemies.RenderMethod = (config.Enemies.RenderMethod + 1) % EnemyRenderMethodLabels.Length;
-                    configChanged = true;
-                }
-                GUILayout.Label("敌人射线、方框、名字与距离统一为红色。", _hintStyle);
+                GUILayout.Label(config.Enemies.VisibilityCheck ? "露出与遮挡颜色可分别自定义。" : "敌人射线、方框、名字与距离使用自定义 ESP 颜色。", _hintStyle);
             }
-            bool enemyHighlightChanged = ToggleConfig(ref config.Enemies.HighlightEnabled, ref config.Enemies.HighlightEnabledKey, "敌人上色");
-            if (enemyHighlightChanged)
+            if (config.Enemies.RenderMethod == 2)
             {
-                EnemyChams.Instance.ToggleChams(config.Enemies.HighlightEnabled);
-                configChanged = true;
-            }
-            if (config.Enemies.HighlightEnabled)
-            {
-                configChanged |= DrawSliderField("上色最大距离", ref config.Enemies.HighlightMaxDistance, 10f, 150f, "m", "F0");
                 float enemyHighlightAlpha = config.Enemies.HighlightColor.a;
-                if (DrawSliderField("上色透明度", ref enemyHighlightAlpha, 0.05f, 1f, string.Empty, "F2"))
+                if (DrawSliderField("发光透明度", ref enemyHighlightAlpha, 0.05f, 1f, string.Empty, "F2"))
                 {
                     Color highlightColor = config.Enemies.HighlightColor;
                     highlightColor.a = enemyHighlightAlpha;
@@ -2416,13 +2793,7 @@ namespace Cheat
                     EnemyChams.Instance.Refresh();
                     configChanged = true;
                 }
-                GUILayout.Label("上色颜色: " + GetColorPresetLabel(config.Enemies.HighlightColor), _hintStyle);
-                if (DrawActionButton("切换上色颜色"))
-                {
-                    CycleColorPreset(ref config.Enemies.HighlightColor);
-                    EnemyChams.Instance.Refresh();
-                    configChanged = true;
-                }
+                GUILayout.Label("发光颜色可在本页底部色板中调整。", _hintStyle);
             }
             GUILayout.EndVertical();
 
@@ -2437,7 +2808,7 @@ namespace Cheat
                 configChanged |= ToggleConfig(ref config.Loot.DynamicOpacity, ref config.Loot.DynamicOpacityKey, "动态透明度");
                 configChanged |= ToggleConfig(ref config.Loot.ShowCartUI, ref config.Loot.ShowCartUIKey, "显示购物车界面");
                 configChanged |= DrawSliderField("最大显示距离", ref config.Loot.MaxDistance, 10f, 500f, "m", "F0");
-                GUILayout.Label("可回收贵重物品的射线、名称和距离统一为绿色。", _hintStyle);
+                GUILayout.Label("物资标记、方框、名称和距离均可自定义颜色。", _hintStyle);
             }
             configChanged |= ToggleConfig(ref config.Loot.HighlightEnabled, ref config.Loot.HighlightEnabledKey, "近距轮廓");
             if (config.Loot.HighlightEnabled)
@@ -2469,7 +2840,54 @@ namespace Cheat
                 configChanged |= ToggleConfig(ref config.Structures.DrawName, ref config.Structures.DrawNameKey, "显示名字");
                 configChanged |= ToggleConfig(ref config.Structures.DrawDistance, ref config.Structures.DrawDistanceKey, "显示距离");
                 configChanged |= DrawSliderField("最大显示距离", ref config.Structures.MaxDistance, 10f, 800f, "m", "F0");
-                GUILayout.Label("提取点固定白色，撤离点固定紫色，陷阱固定橙红色。", _hintStyle);
+                GUILayout.Label("提取点、撤离点和陷阱颜色可分别自定义。", _hintStyle);
+            }
+            GUILayout.EndVertical();
+
+            BeginPanel("小推车透视", "显示地图中的小推车及其内部物品信息。");
+            configChanged |= ToggleConfig(ref config.Carts.Enabled, ref config.Carts.ToggleKey, "启用小推车透视");
+            if (config.Carts.Enabled)
+            {
+                configChanged |= ToggleConfig(ref config.Carts.DrawTracers, ref config.Carts.DrawTracersKey, "绘制射线");
+                configChanged |= ToggleConfig(ref config.Carts.DrawBox, ref config.Carts.DrawBoxKey, "绘制方框");
+                configChanged |= ToggleConfig(ref config.Carts.DrawName, ref config.Carts.DrawNameKey, "显示名字");
+                configChanged |= ToggleConfig(ref config.Carts.DrawDistance, ref config.Carts.DrawDistanceKey, "显示距离");
+                configChanged |= ToggleConfig(ref config.Carts.DrawInfo, ref config.Carts.DrawInfoKey, "显示物品与价值信息");
+                configChanged |= DrawSliderField("最大显示距离", ref config.Carts.MaxDistance, 10f, 800f, "m", "F0");
+                GUILayout.Label("小推车颜色可在本页底部自定义。", _hintStyle);
+            }
+            GUILayout.EndVertical();
+
+            BeginPanel("特殊物品透视", "显示代币箱子和商店办公室门禁卡等特殊道具。");
+            configChanged |= ToggleConfig(ref config.Specials.Enabled, ref config.Specials.ToggleKey, "启用特殊物品透视");
+            if (config.Specials.Enabled)
+            {
+                GUILayout.Space(8);
+                GUILayout.Label("代币箱", _sectionStyle);
+                configChanged |= ToggleConfig(ref config.Specials.TokenBoxEnabled, ref config.Specials.TokenBoxToggleKey, "启用代币箱透视");
+                if (config.Specials.TokenBoxEnabled)
+                {
+                    configChanged |= ToggleConfig(ref config.Specials.TokenBoxTracers, ref config.Specials.TokenBoxTracersKey, "绘制射线");
+                    configChanged |= ToggleConfig(ref config.Specials.TokenBoxBox, ref config.Specials.TokenBoxBoxKey, "绘制方框");
+                    configChanged |= ToggleConfig(ref config.Specials.TokenBoxName, ref config.Specials.TokenBoxNameKey, "显示名字");
+                    configChanged |= ToggleConfig(ref config.Specials.TokenBoxDistance, ref config.Specials.TokenBoxDistanceKey, "显示距离");
+                    configChanged |= ToggleConfig(ref config.Specials.TokenBoxInfo, ref config.Specials.TokenBoxInfoKey, "显示血量和稀有度信息");
+                    configChanged |= DrawSliderField("最大显示距离", ref config.Specials.TokenBoxMaxDistance, 10f, 800f, "m", "F0");
+                }
+
+                GUILayout.Space(8);
+                GUILayout.Label("办公室门禁卡", _sectionStyle);
+                configChanged |= ToggleConfig(ref config.Specials.KeycardEnabled, ref config.Specials.KeycardToggleKey, "启用门禁卡透视");
+                if (config.Specials.KeycardEnabled)
+                {
+                    configChanged |= ToggleConfig(ref config.Specials.KeycardTracers, ref config.Specials.KeycardTracersKey, "绘制射线");
+                    configChanged |= ToggleConfig(ref config.Specials.KeycardBox, ref config.Specials.KeycardBoxKey, "绘制方框");
+                    configChanged |= ToggleConfig(ref config.Specials.KeycardName, ref config.Specials.KeycardNameKey, "显示名字");
+                    configChanged |= ToggleConfig(ref config.Specials.KeycardDistance, ref config.Specials.KeycardDistanceKey, "显示距离");
+                    configChanged |= DrawSliderField("最大显示距离", ref config.Specials.KeycardMaxDistance, 10f, 800f, "m", "F0");
+                }
+                
+                GUILayout.Label("代币箱与门禁卡颜色可分别自定义。", _hintStyle);
             }
             GUILayout.EndVertical();
 
@@ -2503,7 +2921,7 @@ namespace Cheat
             }
             GUILayout.EndVertical();
 
-            BeginPanel("激光瞄准器", "复刻原版激光瞄准器，并兼容队友透视框。");
+            BeginPanel("激光瞄准器", "调整瞄准线显示及队友标记选项。");
             configChanged |= ToggleConfig(ref config.LaserSight.Enabled, ref config.LaserSight.ToggleKey, "启用激光");
             if (config.LaserSight.Enabled)
             {
@@ -2520,13 +2938,64 @@ namespace Cheat
             }
             GUILayout.EndVertical();
             
-            BeginPanel("指南针", "屏幕顶部的指南针。");
-            configChanged |= DrawLocalFeatureSwitch("启用指南针", ref config.Compass.Enabled, ref config.Compass.ToggleKey);
+            BeginPanel("雷达", "圆形动态扫描雷达，默认只显示怪物；可单独开启玩家和死亡头颅标记。");
+            configChanged |= DrawLocalFeatureSwitch("启用雷达", ref config.Compass.Enabled, ref config.Compass.ToggleKey);
             if (config.Compass.Enabled)
             {
-                configChanged |= DrawSliderField("指南针大小", ref config.Compass.Size, 100f, 800f, "px", "F0");
-                configChanged |= DrawSliderField("探测范围", ref config.Compass.Range, 10f, 200f, "m", "F0");
+                configChanged |= DrawSliderField("雷达缩放范围", ref config.Compass.Range, 10f, 200f, "m", "F0");
+                configChanged |= DrawSliderField("雷达大小", ref config.Compass.Size, 100f, 600f, "px", "F0");
+                configChanged |= DrawSliderField("雷达点位缩放", ref config.Compass.Scale, 0.5f, 3f, "x", "F1");
+                configChanged |= DrawSliderField("雷达 X 位置", ref config.Compass.PositionX, -1000f, 1000f, "px", "F0");
+                configChanged |= DrawSliderField("雷达 Y 位置", ref config.Compass.PositionY, -1000f, 1000f, "px", "F0");
+                GUILayout.BeginHorizontal();
+                if (DrawActionButton("玩家位置: " + (config.Compass.ShowPlayers ? "开启" : "关闭")))
+                {
+                    config.Compass.ShowPlayers = !config.Compass.ShowPlayers;
+                    configChanged = true;
+                }
+                if (DrawActionButton("死亡头颅: " + (config.Compass.ShowDeathHeads ? "开启" : "关闭")))
+                {
+                    config.Compass.ShowDeathHeads = !config.Compass.ShowDeathHeads;
+                    configChanged = true;
+                }
+                GUILayout.EndHorizontal();
             }
+            GUILayout.EndVertical();
+
+            BeginPanel("颜色与透视显示风格", "为各类标记调整颜色，并选择四角框、方框或发光效果。");
+            int boxStyle = Mathf.Clamp(config.Enemies.RenderMethod, 0, EnemyRenderMethodLabels.Length - 1);
+            GUILayout.Label("当前透视显示风格: " + EnemyRenderMethodLabels[boxStyle], _hintStyle);
+            if (DrawActionButton("切换透视显示风格"))
+            {
+                config.Enemies.RenderMethod = (boxStyle + 1) % EnemyRenderMethodLabels.Length;
+                config.Enemies.HighlightEnabled = config.Enemies.RenderMethod == 2;
+                EnemyChams.Instance.ToggleChams(config.Enemies.EspEnabled && config.Enemies.RenderMethod == 2);
+                configChanged = true;
+            }
+
+            if (config.Enemies.RenderMethod == 2)
+            {
+                configChanged |= DrawSliderField("发光渲染距离", ref config.Enemies.HighlightMaxDistance, 10f, 5000f, "m", "F0");
+            }
+
+            GUILayout.Space(6f);
+            configChanged |= DrawRgbColorControl("玩家", ref config.PlayerEsp.Color);
+            configChanged |= DrawRgbColorControl("玩家手持物品", ref config.PlayerEsp.EquipmentColor);
+            configChanged |= DrawRgbColorControl("散落的玩家装备", ref config.PlayerEquipmentEsp.Color);
+            configChanged |= DrawRgbColorControl("怪物可见", ref config.Enemies.EspColor);
+            configChanged |= DrawRgbColorControl("怪物遮挡", ref config.Enemies.OccludedEspColor);
+            configChanged |= DrawRgbColorControl("物品与物资", ref config.Loot.EspColor);
+            configChanged |= DrawRgbColorControl("提取点", ref config.Structures.ExtractionPointColor);
+            configChanged |= DrawRgbColorControl("撤离点", ref config.Structures.EvacuationPointColor);
+            configChanged |= DrawRgbColorControl("陷阱", ref config.Structures.TrapColor);
+            configChanged |= DrawRgbColorControl("小推车", ref config.Carts.Color);
+            configChanged |= DrawRgbColorControl("代币箱", ref config.Specials.TokenBoxColor);
+            configChanged |= DrawRgbColorControl("办公室门禁卡", ref config.Specials.KeycardColor);
+            configChanged |= DrawRgbColorControl("怪物发光", ref config.Enemies.HighlightColor);
+            configChanged |= DrawRgbColorControl("物品可见轮廓", ref config.Loot.HighlightColorVisible);
+            configChanged |= DrawRgbColorControl("物品遮挡轮廓", ref config.Loot.HighlightColorOccluded);
+            configChanged |= DrawRgbColorControl("小地图敌人轮廓", ref config.Minimap.RingColor);
+            configChanged |= DrawRgbColorControl("激光瞄准器", ref config.LaserSight.Color);
             GUILayout.EndVertical();
         }
 
@@ -2582,7 +3051,7 @@ namespace Cheat
             GUILayout.Label("从竖向列表选择怪物后生成到前方。", _hintStyle);
             if (Cheat.Features.MonsterSpawner.MonsterSpawner.Instance == null)
             {
-                GUILayout.Label("怪物生成器未初始化。", _hintStyle);
+                GUILayout.Label("怪物列表暂不可用，请稍后再试。", _hintStyle);
                 return;
             }
 
@@ -2615,7 +3084,7 @@ namespace Cheat
             GUILayout.Label("搜索后从竖向列表选择物品。结果过多时请继续缩小关键字。", _hintStyle);
             if (Cheat.Features.ItemSpawner.ItemSpawner.Instance == null)
             {
-                GUILayout.Label("物品生成器未初始化。", _hintStyle);
+                GUILayout.Label("物品列表暂不可用，请稍后再试。", _hintStyle);
                 return;
             }
 
@@ -2663,10 +3132,10 @@ namespace Cheat
         private void DrawWeaponSpawnerCategory()
         {
             GUILayout.Label("武器生成", _sectionStyle);
-            GUILayout.Label("参考原版菜单补回武器/装备生成，使用竖向列表避免超出菜单。", _hintStyle);
+            GUILayout.Label("搜索并选择武器或装备后，即可生成到当前场景。", _hintStyle);
             if (Cheat.Features.ItemSpawner.ItemSpawner.Instance == null)
             {
-                GUILayout.Label("物品生成器未初始化。", _hintStyle);
+                GUILayout.Label("物品列表暂不可用，请稍后再试。", _hintStyle);
                 return;
             }
 
@@ -2714,7 +3183,7 @@ namespace Cheat
         private void DrawTokenBoxSpawnerCategory()
         {
             GUILayout.Label("代币箱", _sectionStyle);
-            GUILayout.Label("移植老项目的代币箱物品生成逻辑，单机与联机都会优先走原生资源生成。", _hintStyle);
+            GUILayout.Label("代币箱会从当前场景可用的物品中生成。", _hintStyle);
             GUILayout.Space(6f);
             if (DrawActionButton("生成普通代币箱 (Common)"))
             {
@@ -2736,11 +3205,11 @@ namespace Cheat
 
         private void DrawMonsterPage()
         {
-            BeginPanel("怪物控制", "补回旧版的怪物控制功能，支持清怪、贴脸传送和怪物拉身边。");
+            BeginPanel("怪物控制", "管理当前场景中的怪物，或将怪物移动到附近。");
             MonsterSpawner monsterSpawner = MonsterSpawner.Instance;
             if ((UnityEngine.Object)(object)monsterSpawner == (UnityEngine.Object)null)
             {
-                GUILayout.Label("怪物控制器未初始化。", _hintStyle);
+                GUILayout.Label("怪物列表暂不可用，请稍后再试。", _hintStyle);
                 GUILayout.EndVertical();
                 return;
             }
@@ -2750,7 +3219,7 @@ namespace Cheat
                 monsterSpawner.KillAllEnemies();
             }
 
-            string killModeText = (!GameManager.Multiplayer() || Photon.Pun.PhotonNetwork.IsMasterClient) ? "当前为主机/单机，击杀走原生伤害流程。" : "当前为非主机，单体/清怪会优先尝试网络辅助击杀。";
+            string killModeText = (!GameManager.Multiplayer() || Photon.Pun.PhotonNetwork.IsMasterClient) ? "当前可直接处理怪物。" : "当前为多人游戏，击杀结果可能受房主状态影响。";
             GUILayout.Label(killModeText, _hintStyle);
             if (!string.IsNullOrEmpty(monsterSpawner.LastActionStatus))
             {
@@ -2762,10 +3231,10 @@ namespace Cheat
 
             List<Enemy> activeEnemies = new List<Enemy>(monsterSpawner.GetActiveEnemiesSnapshot(forceRefresh: true));
             activeEnemies.Sort((left, right) => string.Compare(GetEnemyDisplayName(monsterSpawner, left), GetEnemyDisplayName(monsterSpawner, right), StringComparison.OrdinalIgnoreCase));
-            GUILayout.Label(string.Format("实时同步中，当前检测到 {0} 只怪物。", activeEnemies.Count), _hintStyle);
+            GUILayout.Label(string.Format("当前发现 {0} 只怪物。", activeEnemies.Count), _hintStyle);
             if (activeEnemies.Count == 0)
             {
-                GUILayout.Label("未发现活跃怪物，正在等待场景同步。", _hintStyle);
+                GUILayout.Label("暂未发现怪物，正在查找当前场景。", _hintStyle);
                 GUILayout.EndVertical();
                 return;
             }
@@ -2823,7 +3292,7 @@ namespace Cheat
             }
 
             EnemyHealth health = ((Component)enemy).GetComponent<EnemyHealth>();
-            string hpText = "Invuln";
+            string hpText = "血量暂不可用";
             if (EnemyHealthResolver.TryGetDisplayHealth(enemy, health, out int currentHealth, out int maxHealth) && maxHealth > 0)
             {
                 hpText = string.Format("{0}/{1} HP", currentHealth, maxHealth);
@@ -2838,19 +3307,204 @@ namespace Cheat
                 distanceText = string.Format(" | {0:F0}m", num);
             }
 
-            string syncText = ((UnityEngine.Object)(object)enemyParent != (UnityEngine.Object)null) ? "已同步" : "场景发现";
+            string syncText = ((UnityEngine.Object)(object)enemyParent != (UnityEngine.Object)null) ? "已登记" : "刚发现";
             return string.Format("{0} | {1}{2} | {3}", hpText, stateText, distanceText, syncText);
+        }
+
+        private void DrawAimbotPage(ConfigData config, ref bool configChanged)
+        {
+            BeginPanel("自瞄设置", "调整自动瞄准的各项参数，包括自瞄圈、平滑度与遮挡检测。");
+            
+            configChanged |= DrawLocalFeatureSwitch("启用自瞄", ref config.Aimbot.Enabled, ref config.Aimbot.ToggleKey);
+            configChanged |= DrawLocalFeatureSwitch("显示自瞄圈", ref config.Aimbot.DrawFov, ref config.Aimbot.DrawFovKey);
+            configChanged |= DrawLocalFeatureSwitch("检测是否露出 (遮挡不自瞄)", ref config.Aimbot.CheckVisibility, ref config.Aimbot.CheckVisibilityKey);
+            
+            GUILayout.Space(10f);
+            
+            GUILayout.Label(string.Format("自瞄圈范围半径: {0:F0}", config.Aimbot.FovRadius), _labelStyle);
+            float fovRadius = GUILayout.HorizontalSlider(config.Aimbot.FovRadius, 10f, 1000f, _sliderStyle, _sliderThumbStyle);
+            if (fovRadius != config.Aimbot.FovRadius)
+            {
+                config.Aimbot.FovRadius = fovRadius;
+                configChanged = true;
+            }
+            GUILayout.Label("自瞄圈采用流体彩虹动态圆环。", _hintStyle);
+            
+            GUILayout.Space(10f);
+            
+            GUILayout.Label(string.Format("拉枪平滑度: {0:F2}", config.Aimbot.Smoothness), _labelStyle);
+            float smoothness = GUILayout.HorizontalSlider(config.Aimbot.Smoothness, 0.01f, 1f, _sliderStyle, _sliderThumbStyle);
+            if (smoothness != config.Aimbot.Smoothness)
+            {
+                config.Aimbot.Smoothness = smoothness;
+                configChanged = true;
+            }
+            
+            GUILayout.Space(10f);
+            
+            GUILayout.Label("当前自瞄按键: " + (config.Aimbot.AimKey == KeyCode.Mouse2 ? "鼠标中键(按下滚轮)" : config.Aimbot.AimKey.ToString()), _labelStyle);
+            configChanged |= DrawHotkeyBinderRow("自瞄按键", ref config.Aimbot.AimKey, allowEnd: false);
+            
+            GUILayout.EndVertical();
+        }
+
+        private void DrawAimbotFov()
+        {
+            if (ConfigManager.Config == null || !ConfigManager.Config.Aimbot.DrawFov || !ConfigManager.Config.Aimbot.Enabled)
+                return;
+
+            Vector2 center = new Vector2((float)Screen.width / 2f, (float)Screen.height / 2f);
+            float radius = Mathf.Clamp(ConfigManager.Config.Aimbot.FovRadius, 10f, 1000f);
+            const int segments = 96;
+            float time = Time.unscaledTime;
+            float hueOffset = time * 0.12f;
+            float pulse = 0.82f + Mathf.Sin(time * 2.4f) * 0.10f;
+
+            Vector2 previous = center + new Vector2(radius, 0f);
+            for (int i = 1; i <= segments; i++)
+            {
+                float angle = (i / (float)segments) * (Mathf.PI * 2f);
+                Vector2 next = center + new Vector2(Mathf.Cos(angle) * radius, Mathf.Sin(angle) * radius);
+                Color rainbow = Color.HSVToRGB(Mathf.Repeat((i - 1) / (float)segments + hueOffset, 1f), 0.94f, 1f);
+                rainbow.a = 0.20f * pulse;
+                DrawAimbotFovSegment(previous, next, rainbow, 5f);
+                rainbow.a = 0.96f * pulse;
+                DrawAimbotFovSegment(previous, next, rainbow, 1.8f);
+                previous = next;
+            }
+        }
+
+        private static void DrawAimbotFovSegment(Vector2 start, Vector2 end, Color color, float width)
+        {
+            Vector2 delta = end - start;
+            float length = delta.magnitude;
+            if (length <= 0.01f)
+                return;
+
+            float angle = Mathf.Atan2(delta.y, delta.x) * Mathf.Rad2Deg;
+            DrawRotatedTexture((start + end) * 0.5f, new Vector2(length + 0.5f, width), angle, Texture2D.whiteTexture, color);
         }
 
         private void DrawMiscPage(ConfigData config, ref bool configChanged)
         {
+            BeginPanel("快捷操作", "常用操作与相关设置。");
+            bool forceReturnClicked = DrawActionButton("强制退回到主菜单");
+            if (forceReturnClicked)
+            {
+                try
+                {
+                    if (NetworkManager.instance != null)
+                    {
+                        NetworkManager.instance.LeavePhotonRoom();
+                    }
+                    else if (PhotonNetwork.IsConnected)
+                    {
+                        PhotonNetwork.Disconnect();
+                        UnityEngine.SceneManagement.SceneManager.LoadSceneAsync("Main");
+                    }
+                    else
+                    {
+                        UnityEngine.SceneManagement.SceneManager.LoadSceneAsync("Main");
+                    }
+                    LocalPlayerManager.LastActionStatus = "已请求断开连接并返回主菜单。";
+                }
+                catch (Exception)
+                {
+                    LocalPlayerManager.LastActionStatus = "暂时无法返回主菜单，请稍后重试。";
+                }
+            }
+            if (!string.IsNullOrEmpty(LocalPlayerManager.LastActionStatus))
+            {
+                GUILayout.Label(LocalPlayerManager.LastActionStatus, _hintStyle);
+            }
+            if (DrawActionButton(VersionUpdateChecker.IsChecking ? "正在检查版本更新…" : "检查版本更新"))
+            {
+                VersionUpdateChecker.CheckForUpdates();
+            }
+            GUILayout.Label(VersionUpdateChecker.Status, _hintStyle);
+            bool repoButtonClicked = DrawActionButton("访问 GitHub 仓库");
+            if (repoButtonClicked)
+            {
+                Application.OpenURL("https://github.com/2786256218/ASwave-R.E.P.O-New-Concept-Cheat-Menu");
+            }
+            GUILayout.Label("By ASwave", _hintStyle);
+            GUILayout.EndVertical();
+
+            BeginPanel("金币调整", "设置并添加游戏金币。多人游戏中可能需要等待片刻；金额会按 15 的倍数调整。");
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("自定义金额:", _labelStyle, GUILayout.Width(80f), GUILayout.Height(30f));
+            _customMoneyAmountInput = GUILayout.TextField(_customMoneyAmountInput, _textFieldStyle, GUILayout.Height(30f));
+            if (DrawActionButton("生成", GUILayout.Width(60f)))
+            {
+                if (int.TryParse(_customMoneyAmountInput, out int amount))
+                {
+                    GenerateMoney(amount);
+                }
+                else
+                {
+                    _moneyStatusMessage = "请输入有效的数字！";
+                }
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.Space(8f);
+            GUILayout.BeginHorizontal();
+            if (DrawActionButton("15")) GenerateMoney(15);
+            if (DrawActionButton("150")) GenerateMoney(150);
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            if (DrawActionButton("1500")) GenerateMoney(1500);
+            if (DrawActionButton("15000")) GenerateMoney(15000);
+            GUILayout.EndHorizontal();
+
+            if (!string.IsNullOrEmpty(_moneyStatusMessage))
+            {
+                GUILayout.Space(4f);
+                GUILayout.Label(_moneyStatusMessage, _hintStyle);
+            }
+            GUILayout.Space(12f);
+            GUILayout.EndVertical();
+
+            BeginPanel("房间名称设置", "创建房间时可使用中文或其他特殊字符作为名称。\n操作步骤：在游戏中打开创建房间页面，输入名称后点击应用。");
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("自定义名称:", _labelStyle, GUILayout.Width(80f), GUILayout.Height(30f));
+            _customServerNameInput = GUILayout.TextField(_customServerNameInput, _textFieldStyle, GUILayout.Height(30f));
+            if (DrawActionButton("应用建房", GUILayout.Width(80f)))
+            {
+                ApplyCustomServerName(_customServerNameInput);
+            }
+            GUILayout.EndHorizontal();
+
+            if (!string.IsNullOrEmpty(_serverNameStatusMessage))
+            {
+                GUILayout.Space(4f);
+                GUILayout.Label(_serverNameStatusMessage, _hintStyle);
+            }
+            GUILayout.Space(12f);
+            GUILayout.EndVertical();
+
             BeginPanel("杂项设置", "其他游戏相关设置。");
+            configChanged |= ToggleConfig(ref config.Misc.GlobalItemInvincibility, ref config.Misc.GlobalItemInvincibilityKey, "全局物品无敌");
             configChanged |= ToggleConfig(ref config.Misc.Crosshair, ref config.Misc.CrosshairKey, "显示准星");
             configChanged |= ToggleConfig(ref config.Misc.ShowFps, ref config.Misc.ShowFpsKey, "显示FPS");
             configChanged |= ToggleConfig(ref config.Misc.ShowKeybinds, ref config.Misc.ShowKeybindsKey, "显示快捷键");
             configChanged |= ToggleConfig(ref config.Misc.Fullbright, ref config.Misc.FullbrightKey, "全亮模式");
             configChanged |= ToggleConfig(ref config.Misc.NoFog, ref config.Misc.NoFogKey, "无雾模式");
-            configChanged |= DrawSliderField("视场角(FOV)", ref config.Misc.FOV, 60f, 120f, "°", "F0");
+            float displayFov = config.Misc.FOV > 1f ? config.Misc.FOV : LocalPlayerManager.GetAimbotReferenceFov();
+            if (DrawSliderField("视野角度", ref displayFov, 60f, 120f, "°", "F0"))
+            {
+                config.Misc.FOV = displayFov;
+                configChanged = true;
+            }
+            if (config.Misc.FOV <= 1f)
+            {
+                GUILayout.Label("当前使用游戏默认视野角度，启用菜单后不会自动调整。", _hintStyle);
+            }
+            else if (DrawActionButton("恢复默认视角"))
+            {
+                config.Misc.FOV = -1f;
+                configChanged = true;
+            }
             float setItemValueFloat = config.Misc.SetItemValue;
             if (DrawSliderField("设置物品价值", ref setItemValueFloat, 0f, 100000f, "$", "F0"))
             {
@@ -2863,7 +3517,16 @@ namespace Cheat
             }
             GUILayout.EndVertical();
 
-            BeginPanel("物品操作", "将有价值物品与门分开传送，并支持客户端请求主机执行防损坏与回家。");
+            BeginPanel("画面与操作", "调整视角、文字显示和操作手感；关闭选项后会恢复游戏默认设置。");
+            configChanged |= ToggleConfig(ref config.Misc.DisableCameraMotion, ref config.Misc.DisableCameraMotionKey, "关闭行走镜头晃动");
+            configChanged |= ToggleConfig(ref config.Misc.DisableCameraShakeEffects, ref config.Misc.DisableCameraShakeEffectsKey, "关闭受击与爆炸镜头震动");
+            configChanged |= ToggleConfig(ref config.Misc.DisableGunRecoil, ref config.Misc.DisableGunRecoilKey, "关闭枪械后坐力");
+            configChanged |= ToggleConfig(ref config.Misc.DisableGunCooldown, ref config.Misc.DisableGunCooldownKey, "关闭枪械射击冷却");
+            configChanged |= ToggleConfig(ref config.Misc.DisableItalicText, ref config.Misc.DisableItalicTextKey, "关闭游戏斜体文字");
+            GUILayout.Label("这些选项只影响你的游戏画面和枪械手感。", _hintStyle);
+            GUILayout.EndVertical();
+
+            BeginPanel("物品操作", "移动有价值物品和门，也可开启物品保护或返回货车。");
             configChanged |= ToggleConfig(ref config.Loot.ItemInvulnerable, ref config.Loot.ItemInvulnerableKey, "物品无敌");
             if (DrawActionButton("传送所有有价值物品到指向地面"))
             {
@@ -2872,6 +3535,10 @@ namespace Cheat
             if (DrawActionButton("传送门到指向地面"))
             {
                 LootTeleporter.TeleportDoorsToPlayer();
+            }
+            if (DrawActionButton("一键损坏地图中所有门"))
+            {
+                LootTeleporter.BreakAllDoors();
             }
             if (DrawActionButton("一键回家"))
             {
@@ -2887,13 +3554,9 @@ namespace Cheat
             {
                 GUILayout.Label(LootTeleporter.LastStatus, _hintStyle);
             }
-            if (!string.IsNullOrEmpty(LocalPlayerManager.LastActionStatus))
-            {
-                GUILayout.Label(LocalPlayerManager.LastActionStatus, _hintStyle);
-            }
             GUILayout.EndVertical();
 
-            BeginPanel("菜单热键", "会保存到配置文件，加载配置后自动恢复。");
+            BeginPanel("菜单热键", "热键会随当前设置保存，并在下次使用时恢复。");
             GUILayout.Label("当前开关菜单热键: " + GetEffectiveMenuToggleKey(), _hintStyle);
             configChanged |= DrawHotkeyBinderRow("隐藏菜单开关", ref _menuToggleKey, allowEnd: false);
             GUILayout.Label("卸载菜单固定为 End，不参与自定义。", _hintStyle);
@@ -2920,7 +3583,7 @@ namespace Cheat
 
             BeginPanel("配置管理", "支持多个配置存档，可按名称保存并从列表中选择加载。");
             RefreshConfigProfileSelection();
-            GUILayout.Label(_hasUnsavedConfigChanges ? "当前有未保存改动，点击保存配置后才会写入文件。" : "当前配置已与已保存文件同步。", _hintStyle);
+            GUILayout.Label(_hasUnsavedConfigChanges ? "有未保存的更改，保存后即可保留。" : "配置已保存。", _hintStyle);
             GUILayout.Label("当前配置: " + Cheat.Config.ConfigManager.GetCurrentProfile(), _hintStyle);
             GUILayout.Label("配置目录: " + Cheat.Config.ConfigManager.GetConfigDirectory(), _hintStyle);
             if (!string.IsNullOrEmpty(_configStatusMessage))
@@ -2938,11 +3601,11 @@ namespace Cheat
             GUILayout.EndHorizontal();
 
             GUILayout.Space(8f);
-            GUILayout.BeginHorizontal();
             if (DrawActionButton("按名称保存"))
             {
                 SaveConfigProfile(_configProfileName);
             }
+            GUILayout.BeginHorizontal();
             if (DrawActionButton("覆盖当前配置"))
             {
                 SaveConfigProfile(Cheat.Config.ConfigManager.GetCurrentProfile());
@@ -2958,7 +3621,6 @@ namespace Cheat
             }
             else
             {
-                _configProfilesScroll = GUILayout.BeginScrollView(_configProfilesScroll, GUILayout.Height(180f));
                 for (int i = 0; i < savedProfiles.Count; i++)
                 {
                     string profile = savedProfiles[i];
@@ -2975,7 +3637,6 @@ namespace Cheat
                         _configProfileName = profile;
                     }
                 }
-                GUILayout.EndScrollView();
             }
 
             GUILayout.Space(8f);
@@ -2990,7 +3651,6 @@ namespace Cheat
             }
             GUILayout.EndHorizontal();
 
-            GUILayout.BeginHorizontal();
             if (DrawActionButton("删除全部已保存配置"))
             {
                 Cheat.Config.ConfigManager.DeleteAllSavedConfigs();
@@ -3001,16 +3661,10 @@ namespace Cheat
                 _configStatusMessage = "已清空全部配置存档。";
                 _hasUnsavedConfigChanges = true;
             }
-            GUILayout.EndHorizontal();
-
             GUILayout.EndVertical();
 
-            BeginPanel("关于", "访问仓库以获取更新。");
-            if (DrawActionButton("访问 GitHub 仓库"))
-            {
-                Application.OpenURL("https://github.com/2786256218/ASwave-R.E.P.O-New-Concept-Cheat-Menu");
-            }
-            GUILayout.EndVertical();
+            // 预留底部空间，避免最后一个面板被滚动条或右下角缩放手柄吃掉。
+            GUILayout.Space(64f);
         }
 
         private bool DrawHotkeyBinderRow(string label, ref KeyCode key, bool allowEnd = true)
@@ -3213,14 +3867,14 @@ namespace Cheat
             ValuableDirector valuableDirector = ValuableDirector.instance;
             if (valuableDirector == null || valuableDirector.cosmeticWorldObjectSetups == null)
             {
-                _configStatusMessage = "当前场景还没有同步到代币箱资源。";
+                _configStatusMessage = "当前场景暂时没有可生成的代币箱。";
                 return;
             }
 
             Cheat.Features.ItemSpawner.ItemSpawner itemSpawner = Cheat.Features.ItemSpawner.ItemSpawner.Instance;
             if (itemSpawner == null)
             {
-                _configStatusMessage = "物品生成器未初始化。";
+                _configStatusMessage = "物品列表正在加载，请稍后再试。";
                 return;
             }
 
@@ -3289,6 +3943,217 @@ namespace Cheat
             GUI.color = previousColor;
             RegisterInteractiveRect(animatedRect, pressed, false);
             return Mathf.Abs(previousValue - value) > 0.0001f;
+        }
+
+        private bool DrawRgbColorControl(string label, ref Color color)
+        {
+            bool changed = false;
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(label, _hintStyle);
+            Rect swatch = GUILayoutUtility.GetRect(24f, 20f, GUILayout.Width(30f));
+            if (_whiteTexture != null)
+            {
+                GUI.color = color;
+                GUI.DrawTexture(swatch, _whiteTexture);
+                GUI.color = Color.white;
+            }
+
+            GUILayout.Label("R " + Mathf.RoundToInt(color.r * 255f) + "  G " + Mathf.RoundToInt(color.g * 255f) + "  B " + Mathf.RoundToInt(color.b * 255f), _hintStyle, GUILayout.Width(132f));
+            if (DrawActionButton(_activeEspColorPicker == label ? "收起色板" : "选色"))
+                _activeEspColorPicker = _activeEspColorPicker == label ? null : label;
+            if (DrawActionButton("吸管"))
+            {
+                _eyedropperTarget = label;
+                _eyedropperActive = true;
+                _showMenu = false;
+                _isOpeningMenu = false;
+                _previousCursorLockMode = Cursor.lockState;
+                _previousCursorVisible = Cursor.visible;
+                EnsureMenuCursorState();
+                _menuInputCaptured = true;
+                ResetInputAxesSafe();
+            }
+            GUILayout.EndHorizontal();
+
+            if (_activeEspColorPicker == label)
+            {
+                GUILayout.BeginVertical();
+                EnsureColorPickerTextures(color);
+                Color current = color;
+                float hue;
+                float saturation;
+                float value;
+                Color.RGBToHSV(current, out hue, out saturation, out value);
+
+                Rect svRect = GUILayoutUtility.GetRect(192f, 132f, GUILayout.Width(192f), GUILayout.Height(132f));
+                if (_colorPickerSvTexture != null)
+                    GUI.DrawTexture(svRect, _colorPickerSvTexture);
+                Rect hueRect = GUILayoutUtility.GetRect(192f, 16f, GUILayout.Width(192f), GUILayout.Height(16f));
+                if (_colorPickerHueTexture != null)
+                    GUI.DrawTexture(hueRect, _colorPickerHueTexture);
+
+                Event currentEvent = Event.current;
+                if ((currentEvent.type == EventType.MouseDown || currentEvent.type == EventType.MouseDrag) && currentEvent.button == 0)
+                {
+                    if (svRect.Contains(currentEvent.mousePosition))
+                    {
+                        saturation = Mathf.Clamp01((currentEvent.mousePosition.x - svRect.x) / svRect.width);
+                        value = 1f - Mathf.Clamp01((currentEvent.mousePosition.y - svRect.y) / svRect.height);
+                        color = Color.HSVToRGB(hue, saturation, value);
+                        color.a = current.a;
+                        changed = true;
+                        currentEvent.Use();
+                    }
+                    else if (hueRect.Contains(currentEvent.mousePosition))
+                    {
+                        hue = Mathf.Clamp01((currentEvent.mousePosition.x - hueRect.x) / hueRect.width);
+                        color = Color.HSVToRGB(hue, saturation, value);
+                        color.a = current.a;
+                        changed = true;
+                        currentEvent.Use();
+                    }
+                }
+
+                GUILayout.Label("色板：拖动选择饱和度与明度；色带：选择色相。", _hintStyle);
+                GUILayout.EndVertical();
+            }
+            return changed;
+        }
+
+        private void EnsureColorPickerTextures(Color color)
+        {
+            float hue;
+            float saturation;
+            float value;
+            Color.RGBToHSV(color, out hue, out saturation, out value);
+            if (_colorPickerHueTexture == null)
+            {
+                _colorPickerHueTexture = new Texture2D(192, 1, TextureFormat.RGB24, false);
+                _colorPickerHueTexture.hideFlags = HideFlags.HideAndDontSave;
+                for (int x = 0; x < 192; x++)
+                    _colorPickerHueTexture.SetPixel(x, 0, Color.HSVToRGB(x / 191f, 1f, 1f));
+                _colorPickerHueTexture.Apply(false, false);
+            }
+
+            if (_colorPickerSvTexture == null || Mathf.Abs(Mathf.DeltaAngle(_colorPickerTextureHue * 360f, hue * 360f)) > 0.5f)
+            {
+                if (_colorPickerSvTexture == null)
+                {
+                    _colorPickerSvTexture = new Texture2D(192, 132, TextureFormat.RGB24, false);
+                    _colorPickerSvTexture.hideFlags = HideFlags.HideAndDontSave;
+                }
+                for (int y = 0; y < 132; y++)
+                {
+                    float v = y / 131f;
+                    for (int x = 0; x < 192; x++)
+                        _colorPickerSvTexture.SetPixel(x, y, Color.HSVToRGB(hue, x / 191f, v));
+                }
+                _colorPickerSvTexture.Apply(false, false);
+                _colorPickerTextureHue = hue;
+            }
+        }
+
+        private void DrawEspEyedropperOverlay()
+        {
+            if (Event.current.type != EventType.Repaint)
+                return;
+            Rect banner = new Rect((Screen.width - 360f) * 0.5f, 24f, 360f, 42f);
+            Color previousColor = GUI.color;
+            GUI.color = new Color(0.04f, 0.06f, 0.08f, 0.9f);
+            if (_whiteTexture != null)
+                GUI.DrawTexture(banner, _whiteTexture);
+            GUI.color = Color.white;
+            GUI.Label(banner, "吸管取色：点击屏幕任意位置取色，Esc 取消", _hintStyle);
+            GUI.color = previousColor;
+        }
+
+        private System.Collections.IEnumerator CaptureEspEyedropperColor(Vector2 screenPosition)
+        {
+            _eyedropperActive = false;
+            yield return new WaitForEndOfFrame();
+            try
+            {
+                int x = Mathf.Clamp(Mathf.RoundToInt(screenPosition.x), 0, Screen.width - 1);
+                int y = Mathf.Clamp(Mathf.RoundToInt(screenPosition.y), 0, Screen.height - 1);
+                Texture2D sample = new Texture2D(1, 1, TextureFormat.RGB24, false);
+                sample.ReadPixels(new Rect(x, y, 1, 1), 0, 0, false);
+                sample.Apply(false, false);
+                Color picked = sample.GetPixel(0, 0);
+                DestroyTexture(ref sample);
+                SetEspColorByLabel(_eyedropperTarget, picked);
+                _hasUnsavedConfigChanges = true;
+            }
+            catch (Exception ex)
+            {
+                Debug.Log("[REPO New Cheat] ESP 吸管取色失败: " + ex.Message);
+            }
+            finally
+            {
+                _eyedropperTarget = null;
+                _showMenu = true;
+                _menuVisibleSince = Time.unscaledTime;
+                EnsureMenuCursorState();
+            }
+        }
+
+        private void CancelEspEyedropper()
+        {
+            _eyedropperActive = false;
+            _eyedropperTarget = null;
+            _showMenu = true;
+            _menuVisibleSince = Time.unscaledTime;
+            EnsureMenuCursorState();
+        }
+
+        private static void SetEspColorByLabel(string label, Color color)
+        {
+            ConfigData config = ConfigManager.Config;
+            if (config == null)
+                return;
+            Color previous;
+            switch (label)
+            {
+                case "玩家": previous = config.PlayerEsp.Color; config.PlayerEsp.Color = color; break;
+                case "玩家手持物品": previous = config.PlayerEsp.EquipmentColor; config.PlayerEsp.EquipmentColor = color; break;
+                case "散落的玩家装备": previous = config.PlayerEquipmentEsp.Color; config.PlayerEquipmentEsp.Color = color; break;
+                case "怪物可见": previous = config.Enemies.EspColor; config.Enemies.EspColor = color; break;
+                case "怪物遮挡": previous = config.Enemies.OccludedEspColor; config.Enemies.OccludedEspColor = color; break;
+                case "物品与物资": previous = config.Loot.EspColor; config.Loot.EspColor = color; break;
+                case "提取点": previous = config.Structures.ExtractionPointColor; config.Structures.ExtractionPointColor = color; break;
+                case "撤离点": previous = config.Structures.EvacuationPointColor; config.Structures.EvacuationPointColor = color; break;
+                case "陷阱": previous = config.Structures.TrapColor; config.Structures.TrapColor = color; break;
+                case "小推车": previous = config.Carts.Color; config.Carts.Color = color; break;
+                case "代币箱": previous = config.Specials.TokenBoxColor; config.Specials.TokenBoxColor = color; break;
+                case "办公室门禁卡": previous = config.Specials.KeycardColor; config.Specials.KeycardColor = color; break;
+                case "怪物发光": previous = config.Enemies.HighlightColor; config.Enemies.HighlightColor = color; break;
+                case "物品可见轮廓": previous = config.Loot.HighlightColorVisible; config.Loot.HighlightColorVisible = color; break;
+                case "物品遮挡轮廓": previous = config.Loot.HighlightColorOccluded; config.Loot.HighlightColorOccluded = color; break;
+                case "小地图敌人轮廓": previous = config.Minimap.RingColor; config.Minimap.RingColor = color; break;
+                case "激光瞄准器": previous = config.LaserSight.Color; config.LaserSight.Color = color; break;
+                default: return;
+            }
+            color.a = previous.a;
+            switch (label)
+            {
+                case "玩家": config.PlayerEsp.Color = color; break;
+                case "玩家手持物品": config.PlayerEsp.EquipmentColor = color; break;
+                case "散落的玩家装备": config.PlayerEquipmentEsp.Color = color; break;
+                case "怪物可见": config.Enemies.EspColor = color; break;
+                case "怪物遮挡": config.Enemies.OccludedEspColor = color; break;
+                case "物品与物资": config.Loot.EspColor = color; break;
+                case "提取点": config.Structures.ExtractionPointColor = color; break;
+                case "撤离点": config.Structures.EvacuationPointColor = color; break;
+                case "陷阱": config.Structures.TrapColor = color; break;
+                case "小推车": config.Carts.Color = color; break;
+                case "代币箱": config.Specials.TokenBoxColor = color; break;
+                case "办公室门禁卡": config.Specials.KeycardColor = color; break;
+                case "怪物发光": config.Enemies.HighlightColor = color; break;
+                case "物品可见轮廓": config.Loot.HighlightColorVisible = color; break;
+                case "物品遮挡轮廓": config.Loot.HighlightColorOccluded = color; break;
+                case "小地图敌人轮廓": config.Minimap.RingColor = color; break;
+                case "激光瞄准器": config.LaserSight.Color = color; break;
+            }
+            ConfigManager.SaveConfig(ConfigManager.GetCurrentProfile());
         }
 
         private bool DrawLocalFeatureSwitch(string label, ref bool value, ref KeyCode hotkey)
@@ -3381,6 +4246,8 @@ namespace Cheat
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Local.RunSpeedEnabledKey, ref config.Local.RunSpeedEnabled);
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Local.JumpForceEnabledKey, ref config.Local.JumpForceEnabled);
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Local.GravityEnabledKey, ref config.Local.GravityEnabled);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Local.TumbleFlyKey, ref config.Local.TumbleFly);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Local.ThirdPersonKey, ref config.Local.ThirdPerson);
             if (HotkeyPoller.FeaturePressed(config.Local.FreeCamToggleKey))
             {
                 FreeCam.Toggle();
@@ -3406,18 +4273,23 @@ namespace Cheat
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Enemies.DrawStatusKey, ref config.Enemies.DrawStatus);
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Enemies.DrawPathKey, ref config.Enemies.DrawPath);
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Enemies.TargetWarningKey, ref config.Enemies.TargetWarning);
-            bool enemyHighlightHotkeyChanged = ToggleWhenPressed(config.Enemies.HighlightEnabledKey, ref config.Enemies.HighlightEnabled);
-            if (enemyHighlightHotkeyChanged)
-            {
-                EnemyChams.Instance.ToggleChams(config.Enemies.HighlightEnabled);
-                _hasUnsavedConfigChanges = true;
-            }
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Enemies.VisibilityCheckKey, ref config.Enemies.VisibilityCheck);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Aimbot.ToggleKey, ref config.Aimbot.Enabled);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Aimbot.DrawFovKey, ref config.Aimbot.DrawFov);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Aimbot.CheckVisibilityKey, ref config.Aimbot.CheckVisibility);
 
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.PlayerEsp.ToggleKey, ref config.PlayerEsp.Enabled);
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.PlayerEsp.DrawNameKey, ref config.PlayerEsp.DrawName);
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.PlayerEsp.DrawHealthKey, ref config.PlayerEsp.DrawHealth);
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.PlayerEsp.DrawDistanceKey, ref config.PlayerEsp.DrawDistance);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.PlayerEsp.DrawLineKey, ref config.PlayerEsp.DrawLine);
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.PlayerEsp.DrawHeldItemKey, ref config.PlayerEsp.DrawHeldItem);
+
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.PlayerEquipmentEsp.ToggleKey, ref config.PlayerEquipmentEsp.Enabled);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.PlayerEquipmentEsp.DrawBoxKey, ref config.PlayerEquipmentEsp.DrawBox);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.PlayerEquipmentEsp.DrawNameKey, ref config.PlayerEquipmentEsp.DrawName);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.PlayerEquipmentEsp.DrawDistanceKey, ref config.PlayerEquipmentEsp.DrawDistance);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.PlayerEquipmentEsp.DrawTracersKey, ref config.PlayerEquipmentEsp.DrawTracers);
 
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Structures.ExtractionPointsEnabledKey, ref config.Structures.ExtractionPointsEnabled);
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Structures.EvacuationPointsEnabledKey, ref config.Structures.EvacuationPointsEnabled);
@@ -3426,6 +4298,26 @@ namespace Cheat
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Structures.DrawBoxKey, ref config.Structures.DrawBox);
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Structures.DrawNameKey, ref config.Structures.DrawName);
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Structures.DrawDistanceKey, ref config.Structures.DrawDistance);
+
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Carts.ToggleKey, ref config.Carts.Enabled);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Carts.DrawTracersKey, ref config.Carts.DrawTracers);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Carts.DrawBoxKey, ref config.Carts.DrawBox);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Carts.DrawNameKey, ref config.Carts.DrawName);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Carts.DrawDistanceKey, ref config.Carts.DrawDistance);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Carts.DrawInfoKey, ref config.Carts.DrawInfo);
+            
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Specials.ToggleKey, ref config.Specials.Enabled);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Specials.TokenBoxToggleKey, ref config.Specials.TokenBoxEnabled);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Specials.TokenBoxTracersKey, ref config.Specials.TokenBoxTracers);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Specials.TokenBoxBoxKey, ref config.Specials.TokenBoxBox);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Specials.TokenBoxNameKey, ref config.Specials.TokenBoxName);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Specials.TokenBoxDistanceKey, ref config.Specials.TokenBoxDistance);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Specials.TokenBoxInfoKey, ref config.Specials.TokenBoxInfo);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Specials.KeycardToggleKey, ref config.Specials.KeycardEnabled);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Specials.KeycardTracersKey, ref config.Specials.KeycardTracers);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Specials.KeycardBoxKey, ref config.Specials.KeycardBox);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Specials.KeycardNameKey, ref config.Specials.KeycardName);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Specials.KeycardDistanceKey, ref config.Specials.KeycardDistance);
 
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Minimap.ToggleKey, ref config.Minimap.Enabled);
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Minimap.ShowIconsKey, ref config.Minimap.ShowIcons);
@@ -3443,11 +4335,31 @@ namespace Cheat
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.LaserSight.ShowHitInfoKey, ref config.LaserSight.ShowHitInfo);
 
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Compass.ToggleKey, ref config.Compass.Enabled);
+
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.GameModifiers.AllTeammatesGodModeKey, ref config.GameModifiers.AllTeammatesGodMode);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.GameModifiers.InfiniteWeaponBatteryKey, ref config.GameModifiers.InfiniteWeaponBattery);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.GameModifiers.InfiniteChargingStationKey, ref config.GameModifiers.InfiniteChargingStation);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.GameModifiers.ChargingStationHealKey, ref config.GameModifiers.ChargingStationHeal);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.GameModifiers.AutoReviveTeammatesKey, ref config.GameModifiers.AutoReviveTeammates);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.GameModifiers.AutoReviveWhenSeenKey, ref config.GameModifiers.AutoReviveWhenSeen);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.GameModifiers.ReviveHeadOnTruckKey, ref config.GameModifiers.ReviveHeadOnTruck);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.GameModifiers.ReviveHeadOnExtractionKey, ref config.GameModifiers.ReviveHeadOnExtraction);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.GameModifiers.ReviveHeadOnCartKey, ref config.GameModifiers.ReviveHeadOnCart);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.GameModifiers.ReviveAutoToTruckKey, ref config.GameModifiers.ReviveAutoToTruck);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.GameModifiers.DeathAutoToTruckKey, ref config.GameModifiers.DeathAutoToTruck);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.GameModifiers.DeathAutoToExtractionKey, ref config.GameModifiers.DeathAutoToExtraction);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.GameModifiers.LimitActionAndOverchargeKey, ref config.GameModifiers.LimitActionAndOvercharge);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Misc.GlobalItemInvincibilityKey, ref config.Misc.GlobalItemInvincibility);
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Misc.CrosshairKey, ref config.Misc.Crosshair);
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Misc.ShowFpsKey, ref config.Misc.ShowFps);
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Misc.ShowKeybindsKey, ref config.Misc.ShowKeybinds);
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Misc.FullbrightKey, ref config.Misc.Fullbright);
             _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Misc.NoFogKey, ref config.Misc.NoFog);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Misc.DisableCameraMotionKey, ref config.Misc.DisableCameraMotion);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Misc.DisableCameraShakeEffectsKey, ref config.Misc.DisableCameraShakeEffects);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Misc.DisableGunRecoilKey, ref config.Misc.DisableGunRecoil);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Misc.DisableGunCooldownKey, ref config.Misc.DisableGunCooldown);
+            _hasUnsavedConfigChanges |= ToggleWhenPressed(config.Misc.DisableItalicTextKey, ref config.Misc.DisableItalicText);
         }
 
         private static string GetMinimapRenderModeLabel(int renderMode)
@@ -3680,10 +4592,13 @@ namespace Cheat
 
             float centerX = Screen.width * 0.5f;
             float centerY = Screen.height * 0.5f;
-            DrawOverlayRect(new Rect(centerX - 9f, centerY - 0.5f, 19f, 1f), Color.black);
-            DrawOverlayRect(new Rect(centerX - 0.5f, centerY - 9f, 1f, 19f), Color.black);
-            DrawOverlayRect(new Rect(centerX - 7f, centerY - 0.5f, 15f, 1f), Color.white);
-            DrawOverlayRect(new Rect(centerX - 0.5f, centerY - 7f, 1f, 15f), Color.white);
+            DrawOverlayCircle(new Vector2(centerX, centerY), 4f, new Color(0f, 0f, 0f, 0.9f));
+            DrawOverlayCircle(new Vector2(centerX, centerY), 2f, Color.white);
+        }
+
+        private static void DrawOverlayCircle(Vector2 center, float radius, Color color)
+        {
+            Cheat.UI.Render.DrawCircle(center, radius, color);
         }
 
         private static void DrawFpsOverlay()
@@ -4692,21 +5607,21 @@ namespace Cheat
             switch (lineIndex)
             {
                 case 0:
-                    return $"def route_channel_{channel}(frame={frame % 256}):";
+                    return "正在准备菜单……";
                 case 1:
-                    return $"    bits = '{BuildHackerBitLine(channel + 3, 12, frame)}'";
+                    return "正在读取设置……";
                 case 2:
-                    return "    total = sum(int(bit) for bit in bits)";
+                    return "正在整理功能选项……";
                 case 3:
-                    return $"    mask = (total ^ {((frame + channel * 5) % 31)}) & 0x1f";
+                    return "正在准备显示页面……";
                 case 4:
-                    return "    route = ['scan', 'cache', 'sync'][mask % 3]";
+                    return "正在检查可用功能……";
                 case 5:
-                    return "    if mask % 2 == 0:";
+                    return "界面即将就绪……";
                 case 6:
-                    return $"        return f\"{(frame + channel * 9) % 97:02d}:{{route}}\"";
+                    return "设置已加载。";
                 default:
-                    return "    return 'hold'";
+                    return "请稍候……";
             }
         }
 
@@ -4777,7 +5692,7 @@ namespace Cheat
                 GUI.DrawTexture(new Rect(panelRect.x + 10f, panelRect.y + 8f, panelRect.width - 20f, 2f), _whiteTexture);
                 GUI.DrawTexture(new Rect(panelRect.x + 10f, panelRect.yMax - 10f, panelRect.width - 20f, 1f), _whiteTexture);
 
-                GUI.Label(new Rect(panelRect.x + 12f, panelRect.y + 12f, panelRect.width - 24f, 16f), $">>> channel_{panel}_trace.py", titleStyle);
+                GUI.Label(new Rect(panelRect.x + 12f, panelRect.y + 12f, panelRect.width - 24f, 16f), "菜单准备状态", titleStyle);
                 int activeLine = (frame / 2 + panel) % 8;
                 for (int line = 0; line < 8; line++)
                 {
@@ -5485,6 +6400,8 @@ namespace Cheat
                 DestroyTexture(ref _headerTexture);
                 DestroyTexture(ref _panelTexture);
                 DestroyTexture(ref _whiteTexture);
+            DestroyTexture(ref _colorPickerSvTexture);
+            DestroyTexture(ref _colorPickerHueTexture);
                 DestroyTexture(ref _tabTexture);
                 DestroyTexture(ref _activeTabTexture);
                 DestroyTexture(ref _buttonTexture);
@@ -5704,7 +6621,7 @@ namespace Cheat
 
             GUI.color = Color.white;
             GUI.Label(titleRect, "REPO Cheat Menu By ASwave", _headerStyle);
-            GUI.Label(subtitleRect, "系统正在校准界面布局与功能模块...", _hintStyle);
+            GUI.Label(subtitleRect, "正在加载菜单，请稍候……", _hintStyle);
 
             GUI.color = secondaryAccent;
             DrawStartupTextBackdrop(new Rect(percentRect.x - 2f, percentRect.y - 1f, percentRect.width, 22f), new Color(0.03f, 0.07f, 0.10f, _styleDarkMode ? 0.34f : 0.10f));
@@ -5721,7 +6638,7 @@ namespace Cheat
 
             GUI.color = mutedAccent;
             DrawStartupTextBackdrop(new Rect(statusTextRect.x - 4f, statusTextRect.y - 1f, statusTextRect.width, 22f), new Color(0.04f, 0.07f, 0.10f, _styleDarkMode ? 0.28f : 0.08f));
-            GUI.Label(statusTextRect, "Synchronizing interface matrix...", _hintStyle);
+            GUI.Label(statusTextRect, "正在准备界面……", _hintStyle);
             GUI.color = previousColor;
         }
 
@@ -5770,8 +6687,8 @@ namespace Cheat
             Rect statusRect = new Rect(cardRect.x + 188f, cardRect.yMax - 42f, cardRect.width - 282f, 18f);
 
             GUI.Label(titleRect, "REPO Cheat Menu By ASwave", titleStyle);
-            GUI.Label(subtitleRect, "黑绿矩阵流、二进制雨幕与 Python 逻辑块正在接管界面", subtitleStyle);
-            GUI.Label(percentRect, $"SYNC {Mathf.RoundToInt(progress * 100f)}%", valueStyle);
+            GUI.Label(subtitleRect, "菜单已就绪，可在左侧选择功能。", subtitleStyle);
+            GUI.Label(percentRect, $"进度 {Mathf.RoundToInt(progress * 100f)}%", valueStyle);
 
             int frame = Mathf.FloorToInt(time * 10f);
             int activeLine = (frame / 2) % 8;
@@ -5779,7 +6696,7 @@ namespace Cheat
             GUI.DrawTexture(codeRect, _panelTexture);
             GUI.color = new Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.24f);
             GUI.DrawTexture(new Rect(codeRect.x + 12f, codeRect.y + 10f, codeRect.width - 24f, 2f), _whiteTexture);
-            GUI.Label(new Rect(codeRect.x + 12f, codeRect.y + 12f, codeRect.width - 24f, 16f), ">>> logic_router.py", titleStyle);
+            GUI.Label(new Rect(codeRect.x + 12f, codeRect.y + 12f, codeRect.width - 24f, 16f), "菜单准备进度", titleStyle);
             for (int line = 0; line < 8; line++)
             {
                 GUIStyle style = line == activeLine ? activeCodeStyle : codeStyle;
@@ -5799,7 +6716,7 @@ namespace Cheat
                 GUI.DrawTexture(new Rect(meterBaseX + i * 16f, meterY, 10f, 4f), _whiteTexture);
             }
 
-            GUI.Label(statusRect, "Binary rain syncing code paths and terminal overlays", subtitleStyle);
+            GUI.Label(statusRect, "正在加载设置……", subtitleStyle);
             GUI.color = previousColor;
         }
 
@@ -5881,8 +6798,8 @@ namespace Cheat
 
             GUI.color = Color.white;
             GUI.Label(titleRect, "REPO Cheat Menu By ASwave", _startupDarkHeaderStyle);
-            GUI.Label(subtitleRect, "高对比界面层与核心动画序列正在对齐", _startupDarkHintStyle);
-            GUI.Label(percentRect, $"SYNC {Mathf.RoundToInt(progress * 100f)}%", _startupDarkValueStyle);
+            GUI.Label(subtitleRect, "菜单已就绪，可在左侧选择功能。", _startupDarkHintStyle);
+            GUI.Label(percentRect, $"进度 {Mathf.RoundToInt(progress * 100f)}%", _startupDarkValueStyle);
 
             float waveformWidth = 112f;
             float waveformX = stageRect.center.x - waveformWidth * 0.5f;
@@ -5897,7 +6814,7 @@ namespace Cheat
             }
 
             DrawStartupTextBackdrop(new Rect(statusRect.x + 42f, statusRect.y - 1f, statusRect.width - 84f, 18f), new Color(0.03f, 0.02f, 0.08f, 0.44f));
-            GUI.Label(statusRect, "High-contrast composition aligning render cadence", _startupDarkHintStyle);
+            GUI.Label(statusRect, "设置已加载。", _startupDarkHintStyle);
             GUI.color = previousColor;
         }
 
@@ -5965,9 +6882,9 @@ namespace Cheat
             DrawStartupTextBackdrop(new Rect(statusRect.x - 4f, statusRect.y - 1f, statusRect.width, 18f), new Color(0.04f, 0.04f, 0.08f, 0.42f));
             GUI.color = Color.white;
             GUI.Label(titleRect, "REPO Cheat Menu By ASwave", _startupDarkHeaderStyle);
-            GUI.Label(subtitleRect, "梅紫花影、枝线与花瓣流正在重建旧版梅花主题", _startupDarkHintStyle);
+            GUI.Label(subtitleRect, "菜单已就绪，可在左侧选择功能。", _startupDarkHintStyle);
             GUI.Label(percentRect, $"{Mathf.RoundToInt(progress * 100f)}%", _startupDarkValueStyle);
-            GUI.Label(statusRect, "Plum blossom layers syncing particle flow and card rhythm", _startupDarkHintStyle);
+            GUI.Label(statusRect, "设置已加载。", _startupDarkHintStyle);
             GUI.color = previousColor;
         }
 
@@ -6039,9 +6956,9 @@ namespace Cheat
             DrawStartupTextBackdrop(new Rect(statusRect.x - 4f, statusRect.y - 1f, statusRect.width, 18f), new Color(0.04f, 0.04f, 0.08f, 0.42f));
             GUI.color = Color.white;
             GUI.Label(titleRect, "REPO Cheat Menu By ASwave", _startupDarkHeaderStyle);
-            GUI.Label(subtitleRect, "全屏灯笼如雨般缓缓垂落，灯市楼阁与暖金灯火正在点亮新的国风灯市主题", _startupDarkHintStyle);
+            GUI.Label(subtitleRect, "菜单已就绪，可在左侧选择功能。", _startupDarkHintStyle);
             GUI.Label(percentRect, $"{Mathf.RoundToInt(progress * 100f)}%", _startupDarkValueStyle);
-            GUI.Label(statusRect, "Lantern rain aligning skyline and menu layers", _startupDarkHintStyle);
+            GUI.Label(statusRect, "设置已加载。", _startupDarkHintStyle);
             GUI.color = previousColor;
         }
 
@@ -6198,7 +7115,7 @@ namespace Cheat
 
             GUI.color = Color.white;
             GUI.Label(titleRect, "REPO Cheat Menu By ASwave", _startupLightHeaderStyle);
-            GUI.Label(subtitleRect, "中心花序、卡片层叠与柔光正在入场", _startupLightHintStyle);
+            GUI.Label(subtitleRect, "菜单已就绪，可在左侧选择功能。", _startupLightHintStyle);
             GUI.Label(percentRect, $"{Mathf.RoundToInt(progress * 100f)}%", _startupLightValueStyle);
 
             GUI.color = new Color(1f, 0.92f, 0.95f, 0.18f);
@@ -6217,7 +7134,7 @@ namespace Cheat
             }
 
             DrawStartupTextBackdrop(new Rect(statusRect.x - 4f, statusRect.y - 1f, statusRect.width, 18f), new Color(1f, 0.95f, 0.97f, 0.22f));
-            GUI.Label(statusRect, "Centered particle lattice aligning interface rhythm", _startupLightHintStyle);
+            GUI.Label(statusRect, "设置已加载。", _startupLightHintStyle);
             GUI.color = previousColor;
         }
 
@@ -6312,7 +7229,7 @@ namespace Cheat
 
             GUI.color = Color.white;
             GUI.Label(titleRect, "REPO Cheat Menu By ASwave", _startupLightHeaderStyle);
-            GUI.Label(subtitleRect, "玫瑰花瓣正随风切入主舞台并重组层次", _startupLightHintStyle);
+            GUI.Label(subtitleRect, "菜单已就绪，可在左侧选择功能。", _startupLightHintStyle);
             GUI.Label(percentRect, $"{Mathf.RoundToInt(progress * 100f)}%", _startupLightValueStyle);
 
             GUI.color = new Color(1f, 0.92f, 0.95f, 0.18f);
@@ -6331,7 +7248,7 @@ namespace Cheat
             }
 
             DrawStartupTextBackdrop(new Rect(statusRect.x - 4f, statusRect.y - 1f, statusRect.width, 18f), new Color(1f, 0.94f, 0.96f, 0.22f));
-            GUI.Label(statusRect, "Wind-driven petal layers aligning menu composition", _startupLightHintStyle);
+            GUI.Label(statusRect, "设置已加载。", _startupLightHintStyle);
             GUI.color = previousColor;
         }
 
@@ -6354,9 +7271,11 @@ namespace Cheat
                 EnemyEsp.Draw();
                 WorldEsp.Draw();
                 LootChams.OnRenderObject();
+                EnemyChams.DrawOverlay();
                 LootEsp.Draw();
                 LootEsp.DrawCartUI();
                 PlayerEsp.Draw();
+                PlayerEquipmentEsp.Draw();
                 LaserSight.Draw();
                 DrawCrosshairOverlay();
                 DrawFpsOverlay();

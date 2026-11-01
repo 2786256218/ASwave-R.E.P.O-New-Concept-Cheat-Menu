@@ -15,8 +15,16 @@ public class LootManager
 
 	private static float _lastProtectionSyncTime;
 
+	private const float ProtectionRefreshInterval = 0.35f;
+
 	public static void Update()
 	{
+		if (ConfigManager.Config.Loot.ItemInvulnerable && Time.unscaledTime - _lastProtectionSyncTime >= ProtectionRefreshInterval)
+		{
+			_lastProtectionSyncTime = Time.unscaledTime;
+			RefreshItemProtection();
+		}
+
 		if (!ConfigManager.Config.Loot.Enabled && !ConfigManager.Config.Loot.HighlightEnabled && !ConfigManager.Config.Loot.ItemInvulnerable)
 		{
 			if (LootItems.Count > 0)
@@ -52,12 +60,6 @@ public class LootManager
 			return;
 		}
 		List<LootItem> list = new List<LootItem>();
-		bool protectItems = ConfigManager.Config.Loot.ItemInvulnerable;
-		if (protectItems && GameManager.Multiplayer() && !SemiFunc.IsMasterClientOrSingleplayer() && Time.unscaledTime - _lastProtectionSyncTime >= 0.35f)
-		{
-			_lastProtectionSyncTime = Time.unscaledTime;
-			LocalPlayerManager.RequestLooseItemProtection();
-		}
 		float num = ConfigManager.Config.Loot.MaxDistance * ConfigManager.Config.Loot.MaxDistance;
 		Vector3 val = (((UnityEngine.Object)(object)Camera.main != (UnityEngine.Object)null) ? ((Component)Camera.main).transform.position : Vector3.zero);
 		foreach (PhysGrabObject item in fieldValue)
@@ -65,10 +67,6 @@ public class LootManager
 			if ((UnityEngine.Object)(object)item == (UnityEngine.Object)null || (UnityEngine.Object)(object)((Component)item).gameObject == (UnityEngine.Object)null)
 			{
 				continue;
-			}
-			if (protectItems)
-			{
-				ApplyItemProtection(item);
 			}
 			if (item.playerGrabbing != null && item.playerGrabbing.Count > 0)
 			{
@@ -167,6 +165,16 @@ public class LootManager
 		{
 			ApplyItemProtection(item);
 		}
+	}
+
+	private static void RefreshItemProtection()
+	{
+		// Apply directly on this client. This is authoritative in host/single player
+		// and remains a best-effort local attempt on non-host clients.
+		ApplyProtectionToLooseItems();
+
+		if (GameManager.Multiplayer() && !SemiFunc.IsMasterClientOrSingleplayer())
+			LocalPlayerManager.RequestLooseItemProtection();
 	}
 
 	public static void ApplyItemProtection(PhysGrabObject item)

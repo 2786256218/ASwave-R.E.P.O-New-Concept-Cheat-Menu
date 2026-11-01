@@ -26,42 +26,57 @@ public static class EnemyHealthResolver
 		}
 
 		bool dead = ReflectionUtils.GetFieldValue<bool>(healthComponent, "dead");
-		currentHealth = Mathf.Clamp(ReflectionUtils.GetFieldValue<int>(healthComponent, "healthCurrent"), 0, maxHealth);
-		if (dead)
+		bool deadImpulse = ReflectionUtils.GetFieldValue<bool>(healthComponent, "deadImpulse");
+		if (dead || deadImpulse)
 		{
 			currentHealth = 0;
 			return true;
 		}
 
-		if (!GameManager.Multiplayer() || PhotonNetwork.IsMasterClient)
+		if (GameManager.Multiplayer() && !PhotonNetwork.IsMasterClient)
 		{
-			return true;
+			// EnemyHealth.HurtRPC replicates the hurt effect only; it does not update
+			// healthCurrent on non-host clients. EnemyTick is the only native path
+			// found that broadcasts a health value, rounded down to tens.
+			if (TryGetSyncedHealth(enemy, healthComponent, maxHealth, out int syncedHealth))
+			{
+				currentHealth = syncedHealth;
+				return true;
+			}
+
+			// Never present the stale client-side initialization value as live HP.
+			return false;
 		}
 
-		if (TryGetSyncedHealth(enemy, maxHealth, out int syncedHealth))
-		{
-			currentHealth = syncedHealth;
-		}
-
+		currentHealth = Mathf.Clamp(ReflectionUtils.GetFieldValue<int>(healthComponent, "healthCurrent"), 0, maxHealth);
 		return true;
 	}
 
-	private static bool TryGetSyncedHealth(Enemy enemy, int maxHealth, out int syncedHealth)
+	private static bool TryGetSyncedHealth(Enemy enemy, EnemyHealth healthComponent, int maxHealth, out int syncedHealth)
 	{
 		syncedHealth = 0;
-		if ((UnityEngine.Object)(object)enemy == (UnityEngine.Object)null)
+		if ((UnityEngine.Object)(object)enemy == (UnityEngine.Object)null && (UnityEngine.Object)(object)healthComponent == (UnityEngine.Object)null)
 		{
 			return false;
 		}
 
-		MonoBehaviour[] components = ((Component)enemy).GetComponents<MonoBehaviour>();
-		for (int i = 0; i < components.Length; i++)
+		List<MonoBehaviour> components = new List<MonoBehaviour>();
+		if ((UnityEngine.Object)(object)enemy != (UnityEngine.Object)null)
+		{
+			components.AddRange(((Component)enemy).GetComponentsInChildren<MonoBehaviour>(true));
+			components.AddRange(((Component)enemy).GetComponentsInParent<MonoBehaviour>(true));
+		}
+		if ((UnityEngine.Object)(object)healthComponent != (UnityEngine.Object)null)
+		{
+			components.AddRange(((Component)healthComponent).GetComponentsInChildren<MonoBehaviour>(true));
+		}
+
+		HashSet<int> visited = new HashSet<int>();
+		for (int i = 0; i < components.Count; i++)
 		{
 			MonoBehaviour component = components[i];
-			if ((UnityEngine.Object)(object)component == (UnityEngine.Object)null)
-			{
+			if ((UnityEngine.Object)(object)component == (UnityEngine.Object)null || !visited.Add(((UnityEngine.Object)component).GetInstanceID()))
 				continue;
-			}
 
 			FieldInfo syncedField = GetSyncedHealthField(component.GetType());
 			if (syncedField == null || syncedField.FieldType != typeof(int))

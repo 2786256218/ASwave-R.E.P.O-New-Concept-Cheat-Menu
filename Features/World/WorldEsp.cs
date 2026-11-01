@@ -14,7 +14,9 @@ public static class WorldEsp
 	{
 		ExtractionPoint,
 		EvacuationPoint,
-		Trap
+		Trap,
+		Cart,
+		Special
 	}
 
 	private sealed class RuntimeTarget
@@ -77,10 +79,16 @@ public static class WorldEsp
 		new TargetDefinition("DeathPitForce", TargetCategory.Trap, "坑洞陷阱", new Vector3(4f, 2f, 4f), 46f, 24f),
 		new TargetDefinition("HurtCollider", TargetCategory.Trap, "环境陷阱", new Vector3(3f, 1f, 3f), 40f, 22f),
 		new TargetDefinition("Fireplace", TargetCategory.Trap, "壁炉", new Vector3(2f, 2f, 2f), 30f, 30f),
-		new TargetDefinition("Fire", TargetCategory.Trap, "火焰", new Vector3(1f, 1f, 1f), 20f, 20f),
-		new TargetDefinition("BarrelValuable", TargetCategory.Trap, "火桶", new Vector3(1f, 1.5f, 1f), 20f, 20f),
-		new TargetDefinition("PropaneTankTrap", TargetCategory.Trap, "煤气罐", new Vector3(1f, 1.5f, 1f), 20f, 20f)
-	};
+                new TargetDefinition("Fire", TargetCategory.Trap, "火焰", new Vector3(1f, 1f, 1f), 20f, 20f),
+                new TargetDefinition("BarrelValuable", TargetCategory.Trap, "火桶", new Vector3(1f, 1.5f, 1f), 20f, 20f),
+                new TargetDefinition("PropaneTankTrap", TargetCategory.Trap, "煤气罐", new Vector3(1f, 1.5f, 1f), 20f, 20f),
+                new TargetDefinition("PhysGrabCart", TargetCategory.Cart, "小推车", new Vector3(1.5f, 1.5f, 2f), 30f, 30f),
+                new TargetDefinition("ValuableArcticSnowBike", TargetCategory.Cart, "雪地摩托", new Vector3(2.2f, 1.8f, 3.2f), 34f, 28f),
+                new TargetDefinition("ValuableDesertGolfcart", TargetCategory.Cart, "沙漠载物车", new Vector3(2.4f, 2f, 3.4f), 36f, 30f),
+                new TargetDefinition("ItemVehicle", TargetCategory.Cart, "载具", new Vector3(2.2f, 1.8f, 3.2f), 34f, 28f),
+                new TargetDefinition("CosmeticWorldObject", TargetCategory.Special, "代币箱子", new Vector3(0.5f, 0.5f, 0.5f), 30f, 30f),
+                new TargetDefinition("ShopKeycard", TargetCategory.Special, "办公室门禁卡", new Vector3(0.2f, 0.05f, 0.2f), 30f, 30f)
+        };
 
 	private static readonly Dictionary<string, Type> TypeCache = new Dictionary<string, Type>(StringComparer.Ordinal);
 
@@ -95,7 +103,10 @@ public static class WorldEsp
 	public static void Draw()
 	{
 		ConfigData.StructureEspSettings settings = ConfigManager.Config?.Structures;
-		if (settings == null || !HasAnyEnabled(settings))
+		ConfigData.CartEspSettings cartSettings = ConfigManager.Config?.Carts;
+		ConfigData.SpecialsSettings specialSettings = ConfigManager.Config?.Specials;
+
+		if (settings == null || !HasAnyEnabled(settings, cartSettings, specialSettings))
 		{
 			return;
 		}
@@ -108,7 +119,45 @@ public static class WorldEsp
 
 		if (Time.unscaledTime >= _nextRefreshAt || CachedTargets.Count == 0)
 		{
-			RefreshTargets(settings);
+			RefreshTargets(settings, cartSettings, specialSettings);
+		}
+		
+		// Update dynamic labels per frame for extraction points
+		if (settings.ExtractionPointsEnabled)
+		{
+			for (int i = 0; i < CachedTargets.Count; i++)
+			{
+				if (CachedTargets[i].Category == TargetCategory.ExtractionPoint && CachedTargets[i].Component != null)
+				{
+					ExtractionPoint ep = CachedTargets[i].Component as ExtractionPoint;
+					if (ep != null)
+					{
+						string baseLabel = "提取点";
+						var stateField = typeof(ExtractionPoint).GetField("currentState", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+						if (stateField != null)
+						{
+							ExtractionPoint.State state = (ExtractionPoint.State)stateField.GetValue(ep);
+							switch (state)
+							{
+								case ExtractionPoint.State.Idle:
+									CachedTargets[i].Label = baseLabel + " [未开启]";
+									break;
+								case ExtractionPoint.State.Active:
+								case ExtractionPoint.State.Extracting:
+									CachedTargets[i].Label = baseLabel + " [已开启]";
+									break;
+								case ExtractionPoint.State.Complete:
+								case ExtractionPoint.State.Success:
+									CachedTargets[i].Label = baseLabel + " [已完成]";
+									break;
+								default:
+									CachedTargets[i].Label = baseLabel;
+									break;
+							}
+						}
+					}
+				}
+			}
 		}
 
 		Vector2 tracerOrigin = new Vector2((float)Screen.width * 0.5f, (float)Screen.height - 18f);
@@ -116,7 +165,7 @@ public static class WorldEsp
 		for (int i = CachedTargets.Count - 1; i >= 0; i--)
 		{
 			RuntimeTarget target = CachedTargets[i];
-			if (!IsValidTarget(target) || !IsCategoryEnabled(settings, target.Category))
+			if (!IsValidTarget(target) || !IsCategoryEnabled(settings, cartSettings, target.Category))
 			{
 				if (!IsValidTarget(target))
 				{
@@ -125,9 +174,34 @@ public static class WorldEsp
 				continue;
 			}
 
+			if (target.Category == TargetCategory.Special)
+			{
+				if (specialSettings == null) continue;
+				string typeName = target.Component != null ? target.Component.GetType().Name : "";
+				if (typeName == "CosmeticWorldObject" && !specialSettings.TokenBoxEnabled) continue;
+				if (typeName == "ShopKeycard" && !specialSettings.KeycardEnabled) continue;
+			}
+
 			Vector3 worldPosition = GetWorldPosition(target);
 			float distance = Vector3.Distance(cameraPosition, worldPosition);
-			if (distance > settings.MaxDistance)
+			float maxDistance = settings.MaxDistance;
+			if (target.Category == TargetCategory.Cart)
+			{
+				maxDistance = cartSettings != null ? cartSettings.MaxDistance : 250f;
+			}
+			else if (target.Category == TargetCategory.Special)
+			{
+				string typeName = target.Component != null ? target.Component.GetType().Name : "";
+				if (typeName == "CosmeticWorldObject")
+				{
+					maxDistance = specialSettings != null ? specialSettings.TokenBoxMaxDistance : 250f;
+				}
+				else if (typeName == "ShopKeycard")
+				{
+					maxDistance = specialSettings != null ? specialSettings.KeycardMaxDistance : 250f;
+				}
+			}
+			if (distance > maxDistance)
 			{
 				continue;
 			}
@@ -149,30 +223,172 @@ public static class WorldEsp
 				}
 			}
 
-			Color color = GetCategoryColor(settings, target.Category);
-			if (settings.DrawTracers)
+			Color color = GetCategoryColor(settings, cartSettings, target);
+			
+			bool drawTracers = settings.DrawTracers;
+			bool drawBox = settings.DrawBox;
+			bool drawName = settings.DrawName;
+			bool drawDistance = settings.DrawDistance;
+			bool drawInfo = false;
+
+			if (target.Category == TargetCategory.Cart)
+			{
+				drawTracers = cartSettings != null && cartSettings.DrawTracers;
+				drawBox = cartSettings != null && cartSettings.DrawBox;
+				drawName = cartSettings != null && cartSettings.DrawName;
+				drawDistance = cartSettings != null && cartSettings.DrawDistance;
+				drawInfo = cartSettings != null && cartSettings.DrawInfo;
+			}
+			else if (target.Category == TargetCategory.Special)
+			{
+				string typeName = target.Component != null ? target.Component.GetType().Name : "";
+				if (typeName == "CosmeticWorldObject")
+				{
+					drawTracers = specialSettings != null && specialSettings.TokenBoxTracers;
+					drawBox = specialSettings != null && specialSettings.TokenBoxBox;
+					drawName = specialSettings != null && specialSettings.TokenBoxName;
+					drawDistance = specialSettings != null && specialSettings.TokenBoxDistance;
+					drawInfo = specialSettings != null && specialSettings.TokenBoxInfo;
+				}
+				else if (typeName == "ShopKeycard")
+				{
+					drawTracers = specialSettings != null && specialSettings.KeycardTracers;
+					drawBox = specialSettings != null && specialSettings.KeycardBox;
+					drawName = specialSettings != null && specialSettings.KeycardName;
+					drawDistance = specialSettings != null && specialSettings.KeycardDistance;
+				}
+			}
+
+			if (drawTracers)
 			{
 				Render.DrawLine(tracerOrigin, new Vector2(rect.center.x, rect.yMax), color, 1.2f);
 			}
 
-			if (settings.DrawBox)
+			if (drawBox)
 			{
 				DrawTargetMarker(target.Category, rect, color);
 			}
 
-			if (settings.DrawName)
+			if (drawName)
 			{
 				Render.DrawStringOutlined(new Rect(rect.x - 50f, rect.y - 18f, rect.width + 100f, 18f), target.Label, color, center: true, 12, bold: true);
 			}
 
-			if (settings.DrawDistance)
+			if (drawDistance)
 			{
 				Render.DrawStringOutlined(new Rect(rect.x - 50f, rect.yMax + 2f, rect.width + 100f, 18f), string.Format("{0:F0}m", distance), color, center: true, 12, bold: true);
+			}
+			
+			if (target.Category == TargetCategory.Special && target.Component != null && drawInfo)
+			{
+				string typeName = target.Component.GetType().Name;
+				if (typeName == "CosmeticWorldObject")
+				{
+					try
+					{
+						int healthCurrent = 0;
+						string rarityStr = "Common";
+						
+						var rarityField = target.Component.GetType().GetField("rarity", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+						if (rarityField != null)
+						{
+							object rarityVal = rarityField.GetValue(target.Component);
+							if (rarityVal != null)
+							{
+								rarityStr = rarityVal.ToString();
+							}
+						}
+
+						Component notValuableObj = target.Component.GetComponent("NotValuableObject");
+						if (notValuableObj != null)
+						{
+							var healthField = notValuableObj.GetType().GetField("healthCurrent", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+							if (healthField != null)
+							{
+								healthCurrent = (int)healthField.GetValue(notValuableObj);
+							}
+						}
+
+						float currentY = rect.y - 36f;
+						Render.DrawStringOutlined(new Rect(rect.x - 100f, currentY, rect.width + 200f, 18f), $"[{rarityStr} | 血量: {healthCurrent}]", color, center: true, 12, bold: true);
+					}
+					catch { }
+				}
+			}
+			if (target.Category == TargetCategory.Cart && target.Component != null && drawInfo)
+			{
+				try
+				{
+					float currentY = rect.y - 36f; // 调整到框的上方，避免被底部的距离等信息遮挡
+					var cartObj = target.Component;
+					Transform inCart = cartObj.transform.Find("In Cart");
+					if (inCart != null)
+					{
+						Collider[] array = Physics.OverlapBox(inCart.position, inCart.localScale / 2f, inCart.rotation);
+						int itemCount = 0;
+						int totalValue = 0;
+						List<int> countedIds = new List<int>();
+
+						foreach (Collider collider in array)
+						{
+							if (collider.gameObject.layer != LayerMask.NameToLayer("PhysGrabObject")) continue;
+
+							MonoBehaviour[] monos = collider.GetComponentsInParent<MonoBehaviour>();
+							MonoBehaviour physGrab = null;
+							MonoBehaviour valuableObj = null;
+
+							foreach (var m in monos)
+							{
+								if (m == null) continue;
+								string typeName = m.GetType().Name;
+								if (typeName == "PhysGrabObject" && physGrab == null) physGrab = m;
+								if (typeName == "ValuableObject" && valuableObj == null) valuableObj = m;
+							}
+
+							if (physGrab != null)
+							{
+								int id = physGrab.gameObject.GetInstanceID();
+								if (!countedIds.Contains(id))
+								{
+									countedIds.Add(id);
+									itemCount++;
+
+									if (valuableObj != null)
+									{
+										var dollarValField = valuableObj.GetType().GetField("dollarValueCurrent", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+										if (dollarValField != null)
+										{
+											try
+											{
+												object val = dollarValField.GetValue(valuableObj);
+												if (val != null)
+												{
+													totalValue += System.Convert.ToInt32(val);
+												}
+											}
+											catch { }
+										}
+									}
+								}
+							}
+						}
+
+						if (itemCount == 0)
+						{
+							Render.DrawStringOutlined(new Rect(rect.x - 50f, currentY, rect.width + 100f, 18f), "[空推车]", color, center: true, 12, bold: true);
+						}
+						else
+						{
+							Render.DrawStringOutlined(new Rect(rect.x - 100f, currentY, rect.width + 200f, 18f), $"[物品: {itemCount} | 价值: ${totalValue}]", color, center: true, 12, bold: true);
+						}
+					}
+				}
+				catch { }
 			}
 		}
 	}
 
-	private static void RefreshTargets(ConfigData.StructureEspSettings settings)
+	private static void RefreshTargets(ConfigData.StructureEspSettings settings, ConfigData.CartEspSettings cartSettings, ConfigData.SpecialsSettings specialSettings)
 	{
 		CachedTargets.Clear();
 		SeenInstanceIds.Clear();
@@ -180,7 +396,7 @@ public static class WorldEsp
 		for (int i = 0; i < Definitions.Length; i++)
 		{
 			TargetDefinition definition = Definitions[i];
-			if (!IsCategoryEnabled(settings, definition.Category))
+			if (!IsCategoryEnabled(settings, cartSettings, definition.Category))
 			{
 				continue;
 			}
@@ -206,6 +422,12 @@ public static class WorldEsp
 				}
 
 				int instanceId = ((UnityEngine.Object)component).GetInstanceID();
+				if (target.Category == TargetCategory.Cart)
+				{
+					PhysGrabObject physGrabObject = component.GetComponentInParent<PhysGrabObject>();
+					if ((UnityEngine.Object)(object)physGrabObject != (UnityEngine.Object)null)
+						instanceId = ((UnityEngine.Object)physGrabObject).GetInstanceID();
+				}
 				if (SeenInstanceIds.Add(instanceId))
 				{
 					CachedTargets.Add(target);
@@ -291,12 +513,12 @@ public static class WorldEsp
 		return ((UnityEngine.Object)(object)target.Root != (UnityEngine.Object)null) ? target.Root.position : Vector3.zero;
 	}
 
-	private static bool HasAnyEnabled(ConfigData.StructureEspSettings settings)
+	private static bool HasAnyEnabled(ConfigData.StructureEspSettings settings, ConfigData.CartEspSettings cartSettings, ConfigData.SpecialsSettings specialSettings)
 	{
-		return settings.ExtractionPointsEnabled || settings.EvacuationPointsEnabled || settings.TrapsEnabled;
+		return settings.ExtractionPointsEnabled || settings.EvacuationPointsEnabled || settings.TrapsEnabled || (cartSettings != null && cartSettings.Enabled) || (specialSettings != null && specialSettings.Enabled);
 	}
 
-	private static bool IsCategoryEnabled(ConfigData.StructureEspSettings settings, TargetCategory category)
+	private static bool IsCategoryEnabled(ConfigData.StructureEspSettings settings, ConfigData.CartEspSettings cartSettings, TargetCategory category)
 	{
 		switch (category)
 		{
@@ -306,14 +528,19 @@ public static class WorldEsp
 			return settings.EvacuationPointsEnabled;
 		case TargetCategory.Trap:
 			return settings.TrapsEnabled;
+		case TargetCategory.Cart:
+			return cartSettings != null && cartSettings.Enabled;
+		case TargetCategory.Special:
+			var specialSettings = ConfigManager.Config?.Specials;
+			return specialSettings != null && specialSettings.Enabled;
 		default:
 			return false;
 		}
 	}
 
-	private static Color GetCategoryColor(ConfigData.StructureEspSettings settings, TargetCategory category)
+	private static Color GetCategoryColor(ConfigData.StructureEspSettings settings, ConfigData.CartEspSettings cartSettings, RuntimeTarget target)
 	{
-		switch (category)
+		switch (target.Category)
 		{
 		case TargetCategory.ExtractionPoint:
 			return settings.ExtractionPointColor;
@@ -321,6 +548,20 @@ public static class WorldEsp
 			return settings.EvacuationPointColor;
 		case TargetCategory.Trap:
 			return settings.TrapColor;
+		case TargetCategory.Cart:
+			return cartSettings != null ? cartSettings.Color : Color.white;
+		case TargetCategory.Special:
+			string typeName = target.Component != null ? target.Component.GetType().Name : string.Empty;
+			ConfigData.SpecialsSettings specialSettings = ConfigManager.Config?.Specials;
+			if (specialSettings != null && typeName == "CosmeticWorldObject")
+			{
+				return specialSettings.TokenBoxColor;
+			}
+			if (specialSettings != null && typeName == "ShopKeycard")
+			{
+				return specialSettings.KeycardColor;
+			}
+			return Color.white;
 		default:
 			return Color.white;
 		}
@@ -444,16 +685,7 @@ public static class WorldEsp
 
 	private static void DrawCornerBox(Rect rect, Color color, float thickness)
 	{
-		float cornerWidth = Mathf.Clamp(rect.width * 0.32f, 7f, 20f);
-		float cornerHeight = Mathf.Clamp(rect.height * 0.18f, 8f, 22f);
-		Render.DrawBox(new Rect(rect.x, rect.y, cornerWidth, thickness), color);
-		Render.DrawBox(new Rect(rect.x, rect.y, thickness, cornerHeight), color);
-		Render.DrawBox(new Rect(rect.xMax - cornerWidth, rect.y, cornerWidth, thickness), color);
-		Render.DrawBox(new Rect(rect.xMax - thickness, rect.y, thickness, cornerHeight), color);
-		Render.DrawBox(new Rect(rect.x, rect.yMax - thickness, cornerWidth, thickness), color);
-		Render.DrawBox(new Rect(rect.x, rect.yMax - cornerHeight, thickness, cornerHeight), color);
-		Render.DrawBox(new Rect(rect.xMax - cornerWidth, rect.yMax - thickness, cornerWidth, thickness), color);
-		Render.DrawBox(new Rect(rect.xMax - thickness, rect.yMax - cornerHeight, thickness, cornerHeight), color);
+		Render.DrawEspBox(rect, color, thickness, ConfigManager.Config.Enemies.RenderMethod);
 	}
 
 	private static void DrawDiamond(Rect rect, Color color, float thickness)
@@ -541,9 +773,43 @@ public static class WorldEsp
 
 	private static string ResolveLabel(Component component, TargetDefinition definition)
 	{
+		if (definition.Category == TargetCategory.Cart && component != null && definition.TypeName != "PhysGrabCart")
+		{
+			ItemAttributes attributes = component.GetComponentInParent<ItemAttributes>();
+			if (attributes == null)
+				attributes = component.GetComponentInChildren<ItemAttributes>(true);
+			string itemName = attributes != null && attributes.item != null ? attributes.item.itemName : null;
+			if (!string.IsNullOrWhiteSpace(itemName))
+				return itemName.Trim();
+		}
+
 		if (definition.Category == TargetCategory.Trap && TryResolveTrapLabel(component, out var label))
 		{
 			return label;
+		}
+
+		if (definition.Category == TargetCategory.ExtractionPoint && component != null)
+		{
+			ExtractionPoint ep = component as ExtractionPoint;
+			if (ep != null)
+			{
+				var stateField = typeof(ExtractionPoint).GetField("currentState", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+				if (stateField != null)
+				{
+					ExtractionPoint.State state = (ExtractionPoint.State)stateField.GetValue(ep);
+					switch (state)
+					{
+						case ExtractionPoint.State.Idle:
+							return definition.Label + " [未开启]";
+						case ExtractionPoint.State.Active:
+						case ExtractionPoint.State.Extracting:
+							return definition.Label + " [已开启]";
+						case ExtractionPoint.State.Complete:
+						case ExtractionPoint.State.Success:
+							return definition.Label + " [已完成]";
+					}
+				}
+			}
 		}
 
 		return definition.Label;

@@ -288,15 +288,6 @@ public static class LootEsp
 
 	private static void DrawCornerBox(Rect rect, Color color, float thickness)
 	{
-		float cornerWidth = Mathf.Clamp(rect.width * 0.32f, 8f, 18f);
-		float cornerHeight = Mathf.Clamp(rect.height * 0.18f, 10f, 20f);
-		Render.DrawBox(new Rect(rect.x, rect.y, cornerWidth, thickness), color);
-		Render.DrawBox(new Rect(rect.x, rect.y, thickness, cornerHeight), color);
-		Render.DrawBox(new Rect(rect.xMax - cornerWidth, rect.y, cornerWidth, thickness), color);
-		Render.DrawBox(new Rect(rect.xMax - thickness, rect.y, thickness, cornerHeight), color);
-		Render.DrawBox(new Rect(rect.x, rect.yMax - thickness, cornerWidth, thickness), color);
-		Render.DrawBox(new Rect(rect.x, rect.yMax - cornerHeight, thickness, cornerHeight), color);
-		Render.DrawBox(new Rect(rect.xMax - cornerWidth, rect.yMax - thickness, cornerWidth, thickness), color);
-		Render.DrawBox(new Rect(rect.xMax - thickness, rect.yMax - cornerHeight, thickness, cornerHeight), color);
+		Render.DrawEspBox(rect, color, thickness, ConfigManager.Config.Enemies.RenderMethod);
 	}
 }

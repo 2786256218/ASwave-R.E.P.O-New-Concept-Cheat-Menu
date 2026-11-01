@@ -1,0 +1,35 @@
+# .gitignore
+
+# 编译输出目录与中间产物
+bin/
+obj/
+Debug/
+Release/
+
+# IDE 缓存与本地用户配置
+.vs/
+.idea/
+.vscode/
+*.user
+*.rsuser
+*.suo
+*.userosscache
+*.sln.docstates
+
+# 不参与编译的大体积目录
+GameData/
+
+# 游戏原生的依赖库（避免体积过大和版权问题，需用户自行从游戏目录拷贝）
+Libs/
+
+# 本地调试目录与调试产物
+.dbg/
+build.log
+build2.log
+build3.log
+build_full.log
+debug-*.md
+
+# 常见临时文件
+*.tmp
+*.temp

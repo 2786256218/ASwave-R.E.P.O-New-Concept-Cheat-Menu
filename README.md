@@ -1,200 +1,71 @@
-<div align="center">
-  <a href="#chinese-version">简体中文</a> | <a href="#english-version">English</a>
-</div>
+# REPO Cheat Menu By ASwave
+
+**Version: V3.25.15**
+
+This is a C# game mod for R.E.P.O. It targets the Unity Mono runtime and .NET Framework 4.8. The source is built against the game’s managed assemblies, which are not included in this repository.
+
+## Build
+
+Use Windows with the .NET 10 SDK and .NET Framework 4.8 Developer Pack installed.
+
+1. In the game installation, open `REPO_Data/Managed/`.
+2. Copy its managed DLL files into this project’s `Libs/Managed/` directory. Create the directory if needed. The game assemblies are not redistributed here.
+3. From this project directory, run:
+
+   ```powershell
+   dotnet build REPO.Cheat.csproj -c Release
+   ```
+
+   Or run `build.bat`.
+
+The build output is `bin/Release/net48/REPO New Cheat.dll`.
+
+## Source layout
+
+- `Features/` — game features and visual displays
+- `Config/` — settings and configuration persistence
+- `UI/`, `AuxMenu/`, `Render/` — menu and rendering code
+- `Utils/` — shared helpers and version information
+- `REPO.Cheat.csproj` — project references and build settings
+
+The repository excludes local dependencies, extracted game assets, temporary files, and build output.
+
+## Version
+
+The menu and assembly version is `3.25.15`. The release notes are in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
-<a id="chinese-version"></a>
-# REPO New Cheat
+# REPO Cheat Menu By ASwave (简体中文)
 
-这是一个为游戏 **REPO** 编写的内部注入辅助（Cheat/Mod）。项目基于 Unity Engine 的 Mono 运行环境，并使用了 Photon (PUN) 进行网络同步相关的处理。它提供了丰富的透视、修改和游戏增强功能。
+**版本：V3.25.15**
 
-## ✨ 功能特性
+这是一个为 R.E.P.O. 编写的 C# 游戏模组，运行于 Unity Mono，目标框架为 .NET Framework 4.8。项目依赖游戏目录中的托管程序集；受游戏版权限制，仓库不包含这些 DLL。
 
-通过分析源代码，本项目包含以下主要功能模块：
+## 构建
 
-| 模块分类 | 功能名称 | 详细说明 |
-| :--- | :--- | :--- |
-| **玩家增强 (LocalPlayer)** | **基础属性修改** | 无敌模式、无限体力、无限电量 |
-| | **运动修改** | 移速、跳跃高度、重力调整 |
-| | **状态修改** | 穿墙模式、自由视角、防布娃娃系统 |
-| **透视功能 (ESP & Chams)** | **敌人透视** | 方框 (2D/3D)、轮廓高亮、路径可视化 |
-| | **战利品透视 (Loot)** | 物品位置方框、轮廓高亮显示 |
-| | **玩家透视 (Player)** | 队友位置及状态透视 |
-| **生成器 (Spawner)** | **物品生成器** | 本地/全局生成游戏内各类物品 |
-| | **怪物生成器** | 动态生成、召唤各类怪物实体 |
-| **视觉与UI增强 (Visuals & UI)** | **导航辅助** | 小地图 (支持多渲染模式)、顶部指南针方位指示 |
-| | **视觉增强** | 武器激光瞄准、全图高亮、去雾 |
-| | **定制化图形界面 (GUI)** | 基于 Unity IMGUI 编写，支持多套动态主题（HolographicScan, ObsidianPulse, SakuraDrift 等），带炫酷过渡动画 |
+请使用 Windows，并安装 .NET 10 SDK 与 .NET Framework 4.8 Developer Pack。
 
-## 🛠️ 技术栈
+1. 打开游戏安装目录中的 `REPO_Data/Managed/`。
+2. 将其中的托管 DLL 复制到项目的 `Libs/Managed/` 目录；目录不存在时请先创建。仓库不分发游戏程序集。
+3. 在项目目录运行：
 
-*   **开发语言:** C# (.NET Framework 4.8)
-*   **游戏引擎:** Unity 3D (Mono 架构)
-*   **UI 框架:** 纯 Unity IMGUI 编写，自定义渲染逻辑与动画系统。
-*   **网络同步:** Photon Unity Networking (PUN) 挂钩与 RPC 修复 (RPCFixManager)。
+   ```powershell
+   dotnet build REPO.Cheat.csproj -c Release
+   ```
 
-## 🚀 使用方法
+   也可以运行 `build.bat`。
 
-默认菜单呼出快捷键：`Insert`
-默认卸载辅助快捷键：`End`
+构建产物位于 `bin/Release/net48/REPO New Cheat.dll`。
 
-### 使用 SharpMonoInjector (smi) 注入
+## 源码目录
 
-#### 1. 命令行方式 (CLI)
-打开命令行窗口（CMD/PowerShell），使用以下命令将 DLL 注入到运行中的 REPO 游戏进程：
-```bat
-smi.exe inject -p REPO -a "REPO New Cheat.dll" -n Cheat -c Loader -m Init
-```
+- `Features/`：游戏功能与画面显示
+- `Config/`：设置与配置保存
+- `UI/`、`AuxMenu/`、`Render/`：菜单与绘制代码
+- `Utils/`：通用工具和版本信息
+- `REPO.Cheat.csproj`：项目引用与构建设置
 
-#### 2. GUI 版填写方式
-如果你使用的是 SharpMonoInjector 的图形界面版本，请按照以下信息填写：
-*   **Process (进程):** `REPO`
-*   **Assembly to inject (注入的程序集):** 选择编译好的 DLL 文件（如 `REPO New Cheat.dll`）
-*   **Namespace (命名空间):** `Cheat`
-*   **Class name (类名):** `Loader`
-*   **Method name (方法名):** `Init`
+仓库不包含本地依赖、解包游戏资产、临时文件和构建产物。
 
-![smi注入器填写示例](https://github.com/user-attachments/assets/60078b0e-23d3-4c94-aec2-a229bb74e8e4)
-
-## 📦 安装方法
-
-1.  启动游戏 **REPO** 并进入主菜单或战局中。
-2.  下载最新版本的 **SharpMonoInjector** (或其他 Mono 注入器)。
-3.  获取本项目的发布版 DLL 文件（例如 `REPO New Cheat.dll`）。
-4.  参考上述的 **使用方法** 通过命令行或 GUI 注入到游戏进程中。
-5.  注入成功后，游戏内会弹出控制台提示，按下 `Insert` 键即可呼出菜单。
-
-## 👨‍💻 面向开发者的构建方法
-
-本项目推荐使用 `MSBuild` 或 `.NET CLI` 进行命令行编译。
-
-1.  **前置依赖检查:**
-    *   确保已安装 **.NET Framework 4.8 Developer Pack**。
-    *   确保系统中已安装 **MSBuild**（随 Visual Studio Build Tools 提供）或 **.NET CLI**。
-2.  **准备游戏依赖项 (Libs):**
-    出于版权和仓库体积考虑，本项目**不包含**游戏原生的 DLL 文件。在编译前，你需要手动补充这些依赖：
-    *   在项目根目录下创建一个名为 `Libs/Managed/` 的文件夹（如果不存在）。
-    *   进入你的游戏安装目录 `REPO_Data/Managed/`。
-    *   将该目录下的所有相关的依赖库（特别是 `Assembly-CSharp.dll`, `UnityEngine.dll`, `UnityEngine.*.dll`, `PhotonRealtime.dll`, `PhotonUnityNetworking.dll` 等）复制到你刚刚创建的 `Libs/Managed/` 文件夹中。
-    *   *(可选)* 如果你需要查看或修改游戏源码逻辑以扩展功能，请自行使用 **dnSpy** 或 **ILSpy** 等工具反编译 `Assembly-CSharp.dll`。
-3.  **编译项目:**
-    打开命令行终端，切换到项目根目录（`REPO.Cheat.csproj` 所在位置），执行以下任一命令进行构建：
-
-    **使用 .NET CLI (推荐):**
-    ```cmd
-    dotnet build REPO.Cheat.csproj -c Release
-    ```
-
-    **或者使用 MSBuild:**
-    ```cmd
-    msbuild REPO.Cheat.csproj /p:Configuration=Release
-    ```
-4.  **获取产物:**
-    编译成功后，生成的 DLL 文件将输出到 `bin/Release/net48/` 目录下。
-
-## ⚙️ 依赖环境
-
-*   **运行环境:** .NET Framework 4.8, Unity Mono
-*   **游戏客户端:** REPO
-*   **第三方工具:** SharpMonoInjector (或其他同类的 Unity Mono 注入器)
-
-<br/>
-<br/>
-
----
-
-<a id="english-version"></a>
-# REPO New Cheat
-
-This is an internal injected cheat/mod written for the game **REPO**. The project is based on the Unity Engine's Mono runtime environment and uses Photon (PUN) for network synchronization handling. It provides a rich set of ESP, modification, and game enhancement features.
-
-## ✨ Features
-
-By analyzing the source code, this project includes the following main feature modules:
-
-| Module | Feature | Description |
-| :--- | :--- | :--- |
-| **LocalPlayer** | **Basic Stats** | God Mode, Infinite Stamina, Infinite Battery |
-| | **Movement** | Speed, Jump Height, Gravity Adjustment |
-| | **Status** | NoClip, FreeCam, NoRagdoll |
-| **ESP & Chams** | **Enemy ESP** | 2D/3D Box, Chams, Path Visualizer |
-| | **Loot ESP** | Item Box, Chams |
-| | **Player ESP** | Teammate ESP |
-| **Spawner** | **Item Spawner** | Spawn items locally/globally |
-| | **Monster Spawner** | Spawn monster entities dynamically |
-| **Visuals & UI** | **Navigation** | Minimap (multiple render modes), Compass |
-| | **Visual Enhancements** | Laser Sight, Fullbright, No Fog |
-| | **Custom GUI** | Pure Unity IMGUI with custom rendering logic, dynamic themes (HolographicScan, ObsidianPulse, SakuraDrift, etc.), and transition animations |
-
-## 🛠️ Tech Stack
-
-*   **Language:** C# (.NET Framework 4.8)
-*   **Engine:** Unity 3D (Mono Architecture)
-*   **UI Framework:** Pure Unity IMGUI with custom rendering logic and animation system.
-*   **Networking:** Photon Unity Networking (PUN) hooking and RPCFixManager.
-
-## 🚀 Usage
-
-Default Menu Toggle Key: `Insert`
-Default Unload Key: `End`
-
-### Inject with SharpMonoInjector (smi)
-
-#### 1. Command Line Interface (CLI)
-Open a command prompt (CMD/PowerShell) and use the following command to inject the DLL into the running REPO game process:
-```bat
-smi.exe inject -p REPO -a "REPO New Cheat.dll" -n Cheat -c Loader -m Init
-```
-
-#### 2. GUI Configuration
-If you are using the GUI version of SharpMonoInjector, please fill in the following information:
-*   **Process:** `REPO`
-*   **Assembly to inject:** Select the compiled DLL file (e.g., `REPO New Cheat.dll`)
-*   **Namespace:** `Cheat`
-*   **Class name:** `Loader`
-*   **Method name:** `Init`
-
-![smi injector example](https://github.com/user-attachments/assets/60078b0e-23d3-4c94-aec2-a229bb74e8e4)
-
-## 📦 Installation
-
-1.  Start the game **REPO** and enter the main menu or a match.
-2.  Download the latest version of **SharpMonoInjector** (or another Mono injector).
-3.  Obtain the release DLL file for this project (e.g., `REPO New Cheat.dll`).
-4.  Refer to the **Usage** section above to inject it into the game process via CLI or GUI.
-5.  Upon successful injection, a console prompt will appear in-game; press `Insert` to open the menu.
-
-## 👨‍💻 Build Instructions
-
-It is recommended to use `MSBuild` or the `.NET CLI` for command-line compilation.
-
-1.  **Prerequisites:**
-    *   Install **.NET Framework 4.8 Developer Pack**.
-    *   Ensure **MSBuild** (provided with Visual Studio Build Tools) or **.NET CLI** is installed on your system.
-2.  **Prepare Game Dependencies (Libs):**
-    For copyright and repository size reasons, this project **does not include** the native game DLL files. You need to manually add these dependencies before building:
-    *   Create a folder named `Libs/Managed/` in the project root directory (if it doesn't exist).
-    *   Navigate to your game installation directory `REPO_Data/Managed/`.
-    *   Copy all relevant dependency libraries (especially `Assembly-CSharp.dll`, `UnityEngine.dll`, `UnityEngine.*.dll`, `PhotonRealtime.dll`, `PhotonUnityNetworking.dll`, etc.) from there into your newly created `Libs/Managed/` folder.
-    *   *(Optional)* If you need to inspect or modify the game's source code logic to extend features, use tools like **dnSpy** or **ILSpy** to decompile `Assembly-CSharp.dll` yourself.
-3.  **Build Project:**
-    Open a command terminal, navigate to the project root directory (where `REPO.Cheat.csproj` is located), and run either of the following commands to build:
-
-    **Using .NET CLI (Recommended):**
-    ```cmd
-    dotnet build REPO.Cheat.csproj -c Release
-    ```
-
-    **Or using MSBuild:**
-    ```cmd
-    msbuild REPO.Cheat.csproj /p:Configuration=Release
-    ```
-4.  **Get Build Output:**
-    Upon successful compilation, the generated DLL file will be output to the `bin/Release/net48/` directory.
-
-## ⚙️ Dependencies
-
-*   **Runtime:** .NET Framework 4.8, Unity Mono
-*   **Game Client:** REPO
-*   **Third-party Tools:** SharpMonoInjector (or similar Unity Mono injectors)
+版本为 `3.25.15`，更新内容见 [CHANGELOG.md](CHANGELOG.md)。

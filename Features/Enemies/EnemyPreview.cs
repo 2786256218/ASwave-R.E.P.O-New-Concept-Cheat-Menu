@@ -199,7 +199,7 @@ public class EnemyPreview
 					MeshFilter val6 = val5.AddComponent<MeshFilter>();
 					val6.sharedMesh = val2;
 					MeshRenderer val7 = val5.AddComponent<MeshRenderer>();
-					if ((UnityEngine.Object)(object)EnemyChams.ChamsMaterial != (UnityEngine.Object)null && ConfigManager.Config.Enemies.HighlightEnabled)
+					if ((UnityEngine.Object)(object)EnemyChams.ChamsMaterial != (UnityEngine.Object)null && ConfigManager.Config.Enemies.EspEnabled && ConfigManager.Config.Enemies.RenderMethod == 2)
 					{
 						((Renderer)val7).material = EnemyChams.ChamsMaterial;
 						continue;
@@ -281,7 +281,7 @@ public class EnemyPreview
 		{
 			_dummyModel.transform.localRotation = Quaternion.Euler(0f, _rotation, 0f);
 		}
-		if ((UnityEngine.Object)(object)EnemyChams.ChamsMaterial != (UnityEngine.Object)null && ConfigManager.Config.Enemies.HighlightEnabled)
+		if ((UnityEngine.Object)(object)EnemyChams.ChamsMaterial != (UnityEngine.Object)null && ConfigManager.Config.Enemies.EspEnabled && ConfigManager.Config.Enemies.RenderMethod == 2)
 		{
 			Renderer[] componentsInChildren = _dummyModel.GetComponentsInChildren<Renderer>();
 			Renderer[] array = componentsInChildren;

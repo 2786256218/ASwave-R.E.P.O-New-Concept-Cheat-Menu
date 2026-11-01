@@ -189,6 +189,20 @@ public static class Render
 		GUI.color = color2;
 	}
 
+	public static void DrawCircleOutline(Vector2 center, float radius, Color color, float width = 1f, int segments = 32)
+	{
+		float angleStep = 360f / segments;
+		Vector2 prevPos = center + new Vector2(radius, 0);
+
+		for (int i = 1; i <= segments; i++)
+		{
+			float angle = i * angleStep * (Mathf.PI / 180f);
+			Vector2 nextPos = center + new Vector2(Mathf.Cos(angle) * radius, Mathf.Sin(angle) * radius);
+			DrawLine(prevPos, nextPos, color, width);
+			prevPos = nextPos;
+		}
+	}
+
 	public static void DrawLine(Vector2 start, Vector2 end, Color color, float width)
 	{
 		//IL_0001: Unknown result type (might be due to invalid IL or missing references)
@@ -395,5 +409,25 @@ public static class Render
 		GUI.DrawTexture(new Rect(rect.x, rect.y, 1f, rect.height), (Texture)(object)Texture2D.whiteTexture);
 		GUI.DrawTexture(new Rect(rect.x + rect.width, rect.y, 1f, rect.height + 1f), (Texture)(object)Texture2D.whiteTexture);
 		GUI.color = color2;
+	}
+
+	public static void DrawEspBox(Rect rect, Color color, float thickness, int style)
+	{
+		if (style == 1)
+		{
+			DrawBoxGraphics(rect, color);
+			return;
+		}
+
+		float cornerWidth = Mathf.Clamp(rect.width * 0.32f, 7f, 20f);
+		float cornerHeight = Mathf.Clamp(rect.height * 0.18f, 8f, 22f);
+		DrawBox(new Rect(rect.x, rect.y, cornerWidth, thickness), color);
+		DrawBox(new Rect(rect.x, rect.y, thickness, cornerHeight), color);
+		DrawBox(new Rect(rect.xMax - cornerWidth, rect.y, cornerWidth, thickness), color);
+		DrawBox(new Rect(rect.xMax - thickness, rect.y, thickness, cornerHeight), color);
+		DrawBox(new Rect(rect.x, rect.yMax - thickness, cornerWidth, thickness), color);
+		DrawBox(new Rect(rect.x, rect.yMax - cornerHeight, thickness, cornerHeight), color);
+		DrawBox(new Rect(rect.xMax - cornerWidth, rect.yMax - thickness, cornerWidth, thickness), color);
+		DrawBox(new Rect(rect.xMax - thickness, rect.yMax - cornerHeight, thickness, cornerHeight), color);
 	}
 }

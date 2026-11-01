@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using Cheat.Features.LocalPlayer;
+using Cheat.Features.Teleport;
 using Cheat.Utils;
 using Photon.Pun;
 using UnityEngine;
@@ -36,7 +37,7 @@ public class MonsterSpawner : MonoBehaviour
 
 	private Coroutine _networkKillRoutine;
 
-	private string _lastActionStatus = "主机/单机下可直接击杀；非主机会自动尝试网络辅助击杀。";
+	private string _lastActionStatus = "选择怪物后可执行操作。多人游戏中的部分操作可能受房主状态影响。";
 
 	private bool _backgroundRefreshEnabled;
 
@@ -121,37 +122,45 @@ public class MonsterSpawner : MonoBehaviour
 			return;
 		}
 		List<EnemySetup> list = new List<EnemySetup>();
-		if (EnemyDirector.instance.enemiesDifficulty1 != null)
+		FieldInfo[] directorFields = EnemyDirector.instance.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+		for (int i = 0; i < directorFields.Length; i++)
 		{
-			list.AddRange(EnemyDirector.instance.enemiesDifficulty1);
-		}
-		if (EnemyDirector.instance.enemiesDifficulty2 != null)
-		{
-			list.AddRange(EnemyDirector.instance.enemiesDifficulty2);
-		}
-		if (EnemyDirector.instance.enemiesDifficulty3 != null)
-		{
-			list.AddRange(EnemyDirector.instance.enemiesDifficulty3);
-		}
-		try
-		{
-			FieldInfo field = typeof(EnemyDirector).GetField("debugEnemy", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-			if (field != null && field.GetValue(EnemyDirector.instance) is EnemySetup[] collection)
+			FieldInfo field = directorFields[i];
+			if (!typeof(IEnumerable<EnemySetup>).IsAssignableFrom(field.FieldType))
+				continue;
+			try
 			{
-				list.AddRange(collection);
+				if (field.GetValue(EnemyDirector.instance) is IEnumerable<EnemySetup> setups)
+					list.AddRange(setups);
 			}
+			catch { }
 		}
-		catch
-		{
-		}
+		// Some newly added enemy setups are loaded as ScriptableObject assets
+		// before they are wired into a difficulty list. Include those native setups
+		// too, while rejecting empty/editor-only placeholders.
+		EnemySetup[] loadedSetups = Resources.FindObjectsOfTypeAll<EnemySetup>();
+		for (int i = 0; i < loadedSetups.Length; i++)
+			list.Add(loadedSetups[i]);
+
 		_spawnableEnemies.Clear();
 		_spawnableEnemies.AddRange((from e in list.Distinct()
+			where IsSpawnableEnemySetup(e)
 			orderby ((UnityEngine.Object)e).name
 			select e).ToList());
 		if ((UnityEngine.Object)(object)SelectedEnemy == (UnityEngine.Object)null && _spawnableEnemies.Count > 0)
 		{
 			SelectEnemy(_spawnableEnemies[0]);
 		}
+	}
+
+	private static bool IsSpawnableEnemySetup(EnemySetup setup)
+	{
+		if ((UnityEngine.Object)(object)setup == (UnityEngine.Object)null || setup.spawnObjects == null || setup.spawnObjects.Count == 0)
+			return false;
+		for (int i = 0; i < setup.spawnObjects.Count; i++)
+			if (setup.spawnObjects[i] != null && setup.spawnObjects[i].IsValid())
+				return true;
+		return false;
 	}
 
 	private void UpdateActiveEnemies()
@@ -164,7 +173,7 @@ public class MonsterSpawner : MonoBehaviour
 				TryAddEnemy(dictionary, ResolveEnemyFromParent(item));
 			}
 		}
-		foreach (Enemy item2 in UnityEngine.Object.FindObjectsOfType<Enemy>())
+		foreach (Enemy item2 in UnityEngine.Object.FindObjectsByType<Enemy>(FindObjectsSortMode.None))
 		{
 			TryAddEnemy(dictionary, item2);
 		}
@@ -351,7 +360,7 @@ public class MonsterSpawner : MonoBehaviour
 		{
 			DirectKillEnemy(enemy);
 			ForgetEnemy(enemy);
-			_lastActionStatus = "已通过主机权限执行原生击杀。";
+			_lastActionStatus = "已击杀目标怪物。";
 			UpdateActiveEnemies();
 			_activeEnemyUpdateTimer = 0f;
 			return;
@@ -379,7 +388,7 @@ public class MonsterSpawner : MonoBehaviour
 				DirectKillEnemy(item);
 				ForgetEnemy(item);
 			}
-			_lastActionStatus = string.Format("已通过主机权限执行清怪，共处理 {0} 只怪物。", array.Length);
+			_lastActionStatus = string.Format("已清除 {0} 只怪物。", array.Length);
 			UpdateActiveEnemies();
 			_activeEnemyUpdateTimer = 0f;
 			return;
@@ -389,7 +398,7 @@ public class MonsterSpawner : MonoBehaviour
 			StopCoroutine(_networkKillRoutine);
 		}
 		_networkKillRoutine = StartCoroutine(NetworkAssistKillAllRoutine(array));
-		_lastActionStatus = string.Format("非主机模式：已开始按顺序尝试网络辅助清怪，共 {0} 只。", array.Length);
+		_lastActionStatus = string.Format("正在依次处理 {0} 只怪物，结果可能受房主状态影响。", array.Length);
 	}
 
 	private static bool CanKillDirectly()
@@ -455,7 +464,7 @@ public class MonsterSpawner : MonoBehaviour
 
 	private bool TryStartNetworkAssistKill(Enemy enemy, out string status)
 	{
-		status = "非主机网络辅助击杀启动失败。";
+		status = "暂时无法处理目标怪物。";
 		if (!GameManager.Multiplayer())
 		{
 			return false;
@@ -469,7 +478,7 @@ public class MonsterSpawner : MonoBehaviour
 			StopCoroutine(_networkKillRoutine);
 		}
 		_networkKillRoutine = StartCoroutine(NetworkAssistKillRoutine(enemy, proxyObject, hurtCollider, fallbackToEnemyBody));
-		status = fallbackToEnemyBody ? "非主机模式：未找到可用伤害代理，已回退为敌人刚体同步处置。结果取决于主机物理同步。" : string.Format("非主机模式：已通过 `{0}` 发起网络辅助击杀。", ((UnityEngine.Object)proxyObject).name);
+		status = fallbackToEnemyBody ? "正在尝试处理目标怪物，结果可能受房主状态影响。" : "正在尝试处理目标怪物。";
 		return true;
 	}
 
@@ -558,7 +567,7 @@ public class MonsterSpawner : MonoBehaviour
 			AddDamageProxyCandidate(list, PlayerController.instance.physGrabObject.GetComponent<PhysGrabObject>());
 			AddDamageProxyCandidate(list, PlayerController.instance.physGrabObject.GetComponentInParent<PhysGrabObject>());
 		}
-		foreach (PhysGrabObject item in UnityEngine.Object.FindObjectsOfType<PhysGrabObject>(true))
+		foreach (PhysGrabObject item in UnityEngine.Object.FindObjectsByType<PhysGrabObject>(FindObjectsInactive.Include, FindObjectsSortMode.None))
 		{
 			if (IsHeldByLocalPlayer(item))
 			{
@@ -656,13 +665,13 @@ public class MonsterSpawner : MonoBehaviour
 		proxyObject = null;
 		hurtCollider = null;
 		fallbackToEnemyBody = false;
-		status = "未找到可用于网络辅助击杀的物理代理对象。";
+		status = "未找到可用的处理方式。";
 		if (TryFindLocalPlayerDamageProxy(enemy, out proxyObject, out hurtCollider, out status))
 		{
 			return true;
 		}
 		float num = float.MinValue;
-		foreach (HurtCollider item in UnityEngine.Object.FindObjectsOfType<HurtCollider>(true))
+		foreach (HurtCollider item in UnityEngine.Object.FindObjectsByType<HurtCollider>(FindObjectsInactive.Include, FindObjectsSortMode.None))
 		{
 			if ((UnityEngine.Object)(object)item == (UnityEngine.Object)null || !((Behaviour)item).enabled || !item.enemyLogic || (!item.enemyKill && item.enemyDamage <= 0 && !item.deathPit))
 			{
@@ -692,7 +701,7 @@ public class MonsterSpawner : MonoBehaviour
 		}
 		if ((UnityEngine.Object)(object)proxyObject != (UnityEngine.Object)null)
 		{
-			status = string.Format("已选择网络伤害代理 `{0}`。", ((UnityEngine.Object)proxyObject).name);
+			status = "已找到可用的处理方式。";
 			return true;
 		}
 		EnemyRigidbody fieldValue = ReflectionUtils.GetFieldValue<EnemyRigidbody>(enemy, "Rigidbody");
@@ -704,7 +713,7 @@ public class MonsterSpawner : MonoBehaviour
 			{
 				proxyObject = fieldValue2;
 				fallbackToEnemyBody = true;
-				status = "未找到外部伤害代理，已回退为敌人刚体位置同步。";
+				status = "正在尝试处理目标怪物。";
 				return true;
 			}
 		}
@@ -745,6 +754,11 @@ public class MonsterSpawner : MonoBehaviour
 			_lastActionStatus = "目标怪物或本地玩家不可用，无法执行传送。";
 			return;
 		}
+		if (!NativeTeleportModule.TryBeginAction(TeleportAction.PlayerToEnemy))
+		{
+			_lastActionStatus = NativeTeleportModule.LastStatus;
+			return;
+		}
 
 		Transform anchor = ((UnityEngine.Object)(object)enemy.CenterTransform != (UnityEngine.Object)null) ? enemy.CenterTransform : ((Component)enemy).transform;
 		Vector3 basePosition = anchor.position;
@@ -759,6 +773,11 @@ public class MonsterSpawner : MonoBehaviour
 		}
 
 		Vector3 destination = ResolvePlayerTeleportDestination(anchor, lookDirection);
+		if (!NativeTeleportModule.IsWithinDistance(((Component)PlayerController.instance).transform.position, basePosition))
+		{
+			_lastActionStatus = "目标超出设置的传送距离。";
+			return;
+		}
 		Vector3 forward = Vector3.ProjectOnPlane(basePosition - destination, Vector3.up).normalized;
 		if (forward.sqrMagnitude <= 0.001f)
 		{
@@ -770,19 +789,15 @@ public class MonsterSpawner : MonoBehaviour
 		}
 
 		Quaternion rotation = Quaternion.LookRotation(forward, Vector3.up);
-		if (!LocalPlayerManager.TeleportLocalPlayer(destination, rotation, string.Format("已传送到 `{0}` 身边。", GetEnemyName(enemy))))
+		PlayerAvatar localAvatar = PlayerController.instance.playerAvatarScript != null
+			? PlayerController.instance.playerAvatarScript
+			: PlayerAvatar.instance;
+		if (!NativeTeleportModule.TryTeleportLocalPlayer(localAvatar, destination, rotation))
 		{
-			_lastActionStatus = LocalPlayerManager.LastActionStatus;
+			_lastActionStatus = NativeTeleportModule.LastStatus;
 			return;
 		}
-
-		if ((UnityEngine.Object)(object)PlayerController.instance.rb != (UnityEngine.Object)null)
-		{
-			PlayerController.instance.rb.velocity = Vector3.zero;
-			PlayerController.instance.rb.angularVelocity = Vector3.zero;
-		}
-
-		_lastActionStatus = LocalPlayerManager.LastActionStatus;
+		_lastActionStatus = NativeTeleportModule.LastStatus;
 	}
 
 	private static Vector3 ResolvePlayerTeleportDestination(Transform anchor, Vector3 preferredDirection)

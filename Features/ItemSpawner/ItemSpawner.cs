@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Cheat.Features.LocalPlayer;
 using Photon.Pun;
 using UnityEngine;
 
@@ -56,6 +57,8 @@ public class ItemSpawner : MonoBehaviour
 
 	private readonly List<PendingSpawnRequest> _pendingSpawnRequests = new List<PendingSpawnRequest>();
 
+	private float _nextNativeCatalogRefreshAt;
+
 	private const int MaxSpawnAttempts = 3;
 
 	private const int MaxSpawnsPerUpdate = 3;
@@ -88,10 +91,13 @@ public class ItemSpawner : MonoBehaviour
 		_valuableListVerified = false;
 		AddFixedValuables();
 		AddFixedEquipment();
+		AddDefinitions(SpawnableItems, _valuablePaths, NativeSpawnResolver.BuildResolvedValuableDefs(), null);
+		AddDefinitions(EquipmentItems, _equipmentPaths, NativeSpawnResolver.BuildResolvedEquipmentDefs(), null);
 		SpawnableItems.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.Ordinal));
 		EquipmentItems.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.Ordinal));
 		SelectedItem = FindByNativeId(SpawnableItems, nativeId) ?? FindByResourcePath(SpawnableItems, SelectedItem?.ResourcePath) ?? SpawnableItems.FirstOrDefault();
 		SelectedEquipment = FindByNativeId(EquipmentItems, nativeId2) ?? FindByResourcePath(EquipmentItems, SelectedEquipment?.ResourcePath) ?? EquipmentItems.FirstOrDefault();
+		_nextNativeCatalogRefreshAt = Time.realtimeSinceStartup + 5f;
 	}
 
 	private SpawnableItemDef FindByResourcePath(List<SpawnableItemDef> items, string resourcePath)
@@ -146,6 +152,14 @@ public class ItemSpawner : MonoBehaviour
 
 	private void EnsureListsReady()
 	{
+		bool nativeCatalogReady = (UnityEngine.Object)(object)ValuableDirector.instance != (UnityEngine.Object)null
+			|| (UnityEngine.Object)(object)ShopManager.instance != (UnityEngine.Object)null
+			|| (UnityEngine.Object)(object)ItemManager.instance != (UnityEngine.Object)null;
+		if (nativeCatalogReady && Time.realtimeSinceStartup >= _nextNativeCatalogRefreshAt)
+		{
+			CacheItems();
+			return;
+		}
 		if (SpawnableItems.Count == 0 && (UnityEngine.Object)(object)ValuableDirector.instance != (UnityEngine.Object)null)
 		{
 			CacheItems();
@@ -297,6 +311,22 @@ public class ItemSpawner : MonoBehaviour
 		{
 			return false;
 		}
+		// Room objects must be created by the master client. Clients forward only
+		// the selected resource path; the host resolves it against its own catalog.
+		if (SemiFunc.IsMultiplayer() && !PhotonNetwork.IsMasterClient)
+		{
+			if (string.IsNullOrWhiteSpace(itemDef.ResourcePath))
+			{
+				Debug.LogError((object)("Cannot request item spawn without a resource path: " + (itemDef.Name ?? "Unknown")));
+				return false;
+			}
+			bool requested = LocalPlayerManager.RequestSpawnItem(itemDef.ResourcePath, position, rotation);
+			if (!requested)
+			{
+				Debug.LogError((object)("Could not send item spawn request to the host: " + itemDef.ResourcePath));
+			}
+			return requested;
+		}
 		if (!string.IsNullOrWhiteSpace(itemDef.ResourcePath) && itemDef.ResourcePath.StartsWith("Valuables/", StringComparison.OrdinalIgnoreCase))
 		{
 			itemDef = NativeSpawnResolver.ResolveVerifiedValuable(itemDef) ?? itemDef;
@@ -316,7 +346,7 @@ public class ItemSpawner : MonoBehaviour
 					Debug.LogError((object)("Cannot spawn " + itemDef.Name + " in multiplayer: resource path is empty."));
 					return false;
 				}
-				PhotonNetwork.Instantiate(resourcePath, position, rotation, (byte)0, null);
+				PhotonNetwork.InstantiateRoomObject(resourcePath, position, rotation, (byte)0, null);
 				return true;
 			}
 			GameObject prefab = itemDef.PrefabGetter?.Invoke();
@@ -337,6 +367,37 @@ public class ItemSpawner : MonoBehaviour
 			Debug.LogError((object)("Failed to spawn " + itemDef.Name + " (" + resourcePath + "): " + ex));
 			return false;
 		}
+	}
+
+	/// <summary>
+	/// Resolves a client request against the host's known item catalog and queues
+	/// the authoritative spawn. Arbitrary resource paths from clients are rejected.
+	/// </summary>
+	public bool TrySpawnRequestedItem(string resourcePath, Vector3 position, Quaternion rotation)
+	{
+		if (!PhotonNetwork.IsMasterClient || string.IsNullOrWhiteSpace(resourcePath) || !IsFinite(position))
+		{
+			return false;
+		}
+
+		EnsureListsReady();
+		SpawnableItemDef item = FindByResourcePath(SpawnableItems, resourcePath)
+			?? FindByResourcePath(EquipmentItems, resourcePath);
+		if (item == null)
+		{
+			Debug.LogWarning((object)("Rejected item spawn request for unknown resource: " + resourcePath));
+			return false;
+		}
+
+		EnqueueSpawn(item, position, rotation);
+		return true;
+	}
+
+	private static bool IsFinite(Vector3 value)
+	{
+		return !float.IsNaN(value.x) && !float.IsInfinity(value.x)
+			&& !float.IsNaN(value.y) && !float.IsInfinity(value.y)
+			&& !float.IsNaN(value.z) && !float.IsInfinity(value.z);
 	}
 
 	public void SelectItem(SpawnableItemDef item)

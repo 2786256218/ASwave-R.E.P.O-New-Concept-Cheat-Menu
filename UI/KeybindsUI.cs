@@ -8,98 +8,173 @@ namespace Cheat.UI;
 
 public static class KeybindsUI
 {
-	private class ActiveFeature
+	private sealed class ActiveFeature
 	{
 		public string Name;
-
 		public KeyCode Key;
+		public bool? Enabled;
 	}
 
-	private static List<ActiveFeature> _activeFeatures = new List<ActiveFeature>();
-
-	private static float _lastCheckTime = 0f;
+	private static readonly List<ActiveFeature> ActiveFeatures = new List<ActiveFeature>();
+	private static float _lastCheckTime = -1f;
 
 	public static void Draw()
 	{
-		//IL_008a: Unknown result type (might be due to invalid IL or missing references)
-		//IL_00ae: Unknown result type (might be due to invalid IL or missing references)
-		//IL_00b5: Unknown result type (might be due to invalid IL or missing references)
-		if (Time.time - _lastCheckTime > 1f)
+		if (ConfigManager.Config == null)
+			return;
+		if (_lastCheckTime < 0f || Time.unscaledTime - _lastCheckTime > 0.25f)
 		{
 			UpdateActiveFeatures();
-			_lastCheckTime = Time.time;
+			_lastCheckTime = Time.unscaledTime;
 		}
-		if (_activeFeatures.Count == 0)
-		{
+		if (ActiveFeatures.Count == 0)
 			return;
-		}
-		float num = (float)Screen.height / 2f - (float)_activeFeatures.Count * 25f / 2f;
-		float num2 = 20f;
-		foreach (ActiveFeature activeFeature in _activeFeatures)
+
+		const float x = 16f;
+		const float y = 16f;
+		const float width = 310f;
+		const float rowHeight = 21f;
+		float height = 30f + ActiveFeatures.Count * rowHeight;
+		Color previous = GUI.color;
+		GUI.color = new Color(0.015f, 0.025f, 0.04f, 0.78f);
+		GUI.DrawTexture(new Rect(x, y, width, height), Texture2D.whiteTexture);
+		GUI.color = new Color(0.24f, 0.86f, 1f, 0.9f);
+		GUI.DrawTexture(new Rect(x, y, width, 2f), Texture2D.whiteTexture);
+		GUI.color = previous;
+		Render.DrawStringOutlined(new Rect(x + 9f, y + 5f, width - 18f, 20f), "已绑定快捷键", new Color(0.35f, 0.9f, 1f, 1f), center: false, 13, bold: true);
+
+		float rowY = y + 29f;
+		for (int i = 0; i < ActiveFeatures.Count; i++)
 		{
-			string text = $"[{activeFeature.Key}] {activeFeature.Name}";
-			Render.DrawStringOutlined(new Rect(num2, num, 300f, 25f), text, Color.white, center: false, 16, bold: true);
-			num += 25f;
+			ActiveFeature feature = ActiveFeatures[i];
+			string text = feature.Name + "  [" + feature.Key + "]" + (feature.Enabled.HasValue ? (feature.Enabled.Value ? "  开启" : "  关闭") : string.Empty);
+			Color color = feature.Enabled == false ? new Color(0.65f, 0.72f, 0.78f, 0.85f) : Color.white;
+			Render.DrawStringOutlined(new Rect(x + 9f, rowY, width - 18f, rowHeight), text, color, center: false, 11, bold: feature.Enabled == true);
+			rowY += rowHeight;
 		}
 	}
 
 	private static void UpdateActiveFeatures()
 	{
-		_activeFeatures.Clear();
-		CheckSettings(ConfigManager.Config.Loot, "Loot ESP");
-		CheckSettings(ConfigManager.Config.Enemies, "Enemy ESP");
-		CheckSettings(ConfigManager.Config.Minimap, "Minimap");
-		CheckSettings(ConfigManager.Config.Compass, "Compass");
-		CheckSettings(ConfigManager.Config.Local, "God Mode", "GodMode", "GodModeKey");
-		CheckSettings(ConfigManager.Config.Local, "穿墙模式", "NoClip", "NoClipKey");
-		if (Cheat.Features.LocalPlayer.FreeCam.Enabled)
-		{
-			_activeFeatures.Add(new ActiveFeature
-			{
-				Name = "自由视角",
-				Key = ConfigManager.Config.Local.FreeCamToggleKey
-			});
-		}
-	}
-
-	private static void CheckSettings(object settingsObj, string displayName, string boolField = "Enabled", string keyField = "ToggleKey")
-	{
-		//IL_00a0: Unknown result type (might be due to invalid IL or missing references)
-		//IL_00a5: Unknown result type (might be due to invalid IL or missing references)
-		//IL_00a7: Unknown result type (might be due to invalid IL or missing references)
-		//IL_00aa: Invalid comparison between Unknown and I4
-		//IL_00c8: Unknown result type (might be due to invalid IL or missing references)
-		//IL_00ca: Unknown result type (might be due to invalid IL or missing references)
-		if (settingsObj == null)
-		{
+		ActiveFeatures.Clear();
+		ConfigData config = ConfigManager.Config;
+		if (config == null)
 			return;
-		}
-		Type type = settingsObj.GetType();
-		bool flag = true;
-		if (!string.IsNullOrEmpty(boolField))
+
+		FieldInfo[] groups = typeof(ConfigData).GetFields(BindingFlags.Instance | BindingFlags.Public);
+		for (int i = 0; i < groups.Length; i++)
 		{
-			FieldInfo field = type.GetField(boolField);
-			if (field != null && field.GetValue(settingsObj) is bool flag2)
+			object settings = groups[i].GetValue(config);
+			if (settings == null)
+				continue;
+			FieldInfo[] fields = settings.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public);
+			for (int f = 0; f < fields.Length; f++)
 			{
-				flag = flag2;
-			}
-		}
-		if (flag)
-		{
-			FieldInfo field2 = type.GetField(keyField);
-			if (field2 != null && field2.GetValue(settingsObj) is KeyCode val && (int)val > 0)
-			{
-				_activeFeatures.Add(new ActiveFeature
+				FieldInfo keyField = fields[f];
+				if (keyField.FieldType != typeof(KeyCode))
+					continue;
+				if (keyField.Name == "SolidAimKey")
+					continue;
+				KeyCode key = (KeyCode)keyField.GetValue(settings);
+				if (key == KeyCode.None)
+					continue;
+
+				string boolName = ResolveBooleanFieldName(settings.GetType(), keyField.Name);
+				bool? enabled = null;
+				if (!string.IsNullOrEmpty(boolName))
 				{
-					Name = displayName,
-					Key = val
+					FieldInfo stateField = settings.GetType().GetField(boolName, BindingFlags.Instance | BindingFlags.Public);
+					if (stateField != null && stateField.FieldType == typeof(bool))
+						enabled = (bool)stateField.GetValue(settings);
+				}
+
+				ActiveFeatures.Add(new ActiveFeature
+				{
+					Name = ResolveDisplayName(groups[i].Name, keyField.Name),
+					Key = key,
+					Enabled = enabled
 				});
 			}
 		}
+
+		ActiveFeatures.Sort((left, right) => string.Compare(left.Name, right.Name, StringComparison.OrdinalIgnoreCase));
 	}
 
-	private static void CheckSettings(object settingsObj, string displayName, string keyField)
+	private static string ResolveBooleanFieldName(Type settingsType, string keyFieldName)
 	{
-		CheckSettings(settingsObj, displayName, null, keyField);
+		string candidate = keyFieldName.EndsWith("Key", StringComparison.Ordinal) ? keyFieldName.Substring(0, keyFieldName.Length - 3) : keyFieldName;
+		if (candidate.Length > 0)
+		{
+			FieldInfo exact = settingsType.GetField(candidate, BindingFlags.Instance | BindingFlags.Public);
+			if (exact != null && exact.FieldType == typeof(bool))
+				return candidate;
+		}
+		if (keyFieldName == "ToggleKey")
+		{
+			FieldInfo enabled = settingsType.GetField("Enabled", BindingFlags.Instance | BindingFlags.Public);
+			if (enabled != null && enabled.FieldType == typeof(bool))
+				return "Enabled";
+			FieldInfo espEnabled = settingsType.GetField("EspEnabled", BindingFlags.Instance | BindingFlags.Public);
+			if (espEnabled != null && espEnabled.FieldType == typeof(bool))
+				return "EspEnabled";
+		}
+		return null;
+	}
+
+	private static string ResolveDisplayName(string groupName, string keyFieldName)
+	{
+		string keyName = keyFieldName.EndsWith("Key", StringComparison.Ordinal) ? keyFieldName.Substring(0, keyFieldName.Length - 3) : keyFieldName;
+		string group = groupName.Replace("Settings", string.Empty);
+		string groupLabel = group;
+		switch (group)
+		{
+			case "Loot": groupLabel = "物品透视"; break;
+			case "Enemies": groupLabel = "敌人透视"; break;
+			case "Minimap": groupLabel = "小地图"; break;
+			case "Compass": groupLabel = "雷达"; break;
+			case "Local": groupLabel = "本地"; break;
+			case "Aimbot": groupLabel = "自瞄"; break;
+			case "Specials": groupLabel = "特殊物品"; break;
+			case "GameModifiers": groupLabel = "全局修改"; break;
+			case "PlayerEsp": groupLabel = "玩家"; break;
+			case "PlayerEquipmentEsp": groupLabel = "玩家装备"; break;
+			case "LaserSight": groupLabel = "激光瞄准器"; break;
+		}
+		string feature = keyName;
+		if (keyName == "Toggle")
+			feature = group == "Compass" ? "雷达" : group == "Enemies" ? "敌人透视" : group == "Loot" ? "物品透视" : group;
+		else
+		{
+			switch (keyName)
+			{
+				case "GodMode": feature = "无敌"; break;
+				case "NoClip": feature = "穿墙移动"; break;
+				case "ThirdPerson": feature = "第三人称"; break;
+				case "TumbleFly": feature = "摔倒飞行"; break;
+				case "Crosshair": feature = "准星"; break;
+				case "ShowKeybinds": feature = "显示快捷键"; break;
+				case "ShowFps": feature = "显示帧率"; break;
+				case "EspEnabled": feature = "敌人透视"; break;
+				case "DrawName": feature = "显示名称"; break;
+				case "DrawHealth": feature = "显示血量"; break;
+				case "DrawDistance": feature = "显示距离"; break;
+				case "DrawTracers": feature = "绘制射线"; break;
+				case "DrawStatus": feature = "显示血量状态"; break;
+				case "DrawBox": feature = "绘制方框"; break;
+				case "Enabled": feature = group == "Aimbot" ? "自瞄" : group == "Compass" ? "雷达" : group; break;
+			}
+		}
+
+		if (group == "Local" && feature != "无敌" && feature != "穿墙移动" && feature != "第三人称" && feature != "摔倒飞行")
+			return groupLabel + " " + feature;
+		if (group == "PlayerEsp")
+			return groupLabel + " " + feature;
+		if (group == "PlayerEquipmentEsp")
+			return groupLabel + " " + feature;
+		if (group == "Enemies")
+			return feature;
+		if (group == "Compass")
+			return feature;
+		return groupLabel + " " + feature;
 	}
 }

@@ -23,10 +23,9 @@ public static class ConfigManager
 	private const string LegacyConfigFileExtension = ".json";
 
 	private const int ConfigMagic = 1381259348;
+	private const int ConfigVersion = 21;
 
-	private const int ConfigVersion = 4;
-
-	private const int TextConfigVersion = 5;
+	private const int TextConfigVersion = 8;
 
 	private static string _configDirectory;
 
@@ -357,13 +356,21 @@ public static class ConfigManager
 		config ??= new ConfigData();
 		config.Loot ??= new ConfigData.LootSettings();
 		config.Enemies ??= new ConfigData.EnemySettings();
+		config.Enemies.RenderMethod = Math.Max(0, Math.Min(2, config.Enemies.RenderMethod));
 		config.Minimap ??= new ConfigData.MinimapSettings();
 		config.Local ??= new ConfigData.LocalSettings();
 		config.Misc ??= new ConfigData.MiscSettings();
 		config.Compass ??= new ConfigData.CompassSettings();
 		config.PlayerEsp ??= new ConfigData.PlayerEspSettings();
+		config.PlayerEquipmentEsp ??= new ConfigData.PlayerEquipmentEspSettings();
 		config.LaserSight ??= new ConfigData.LaserSightSettings();
 		config.Structures ??= new ConfigData.StructureEspSettings();
+		config.Carts ??= new ConfigData.CartEspSettings();
+		config.Specials ??= new ConfigData.SpecialsSettings();
+		config.GameModifiers ??= new ConfigData.GameModifiersSettings();
+		config.Teleport ??= new ConfigData.TeleportSettings();
+		config.Aimbot ??= new ConfigData.AimbotSettings();
+		config.Skills ??= new ConfigData.SkillSettings();
 		config.UI ??= new ConfigData.UiSettings();
 		return config;
 	}
@@ -452,6 +459,8 @@ public static class ConfigManager
 		if (directConfig != null)
 		{
 			configData = EnsureConfigDefaults(directConfig);
+			if (configData.Enemies.HighlightMaxDistance <= 150f)
+				configData.Enemies.HighlightMaxDistance = 1000f;
 			return true;
 		}
 
@@ -469,6 +478,7 @@ public static class ConfigManager
 	{
 		configData = new ConfigData();
 		bool sawValue = false;
+		int documentVersion = 1;
 		string[] lines = text.Replace("\r", string.Empty).Split('\n');
 		for (int i = 0; i < lines.Length; i++)
 		{
@@ -489,6 +499,7 @@ public static class ConfigManager
 			if (string.Equals(key, "Version", StringComparison.OrdinalIgnoreCase))
 			{
 				sawValue = true;
+				int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out documentVersion);
 				continue;
 			}
 
@@ -505,6 +516,8 @@ public static class ConfigManager
 		}
 
 		configData = EnsureConfigDefaults(configData);
+		if (documentVersion < 8 && configData.Enemies.HighlightMaxDistance <= 150f)
+			configData.Enemies.HighlightMaxDistance = 1000f;
 		return true;
 	}
 
@@ -803,7 +816,7 @@ public static class ConfigManager
 		{
 			writer.Write(ConfigMagic);
 			writer.Write(ConfigVersion);
-			WriteLoot(writer, config.Loot);
+			WriteLoot(writer, config);
 			WriteEnemies(writer, config.Enemies);
 			WriteMinimap(writer, config.Minimap);
 			WriteLocal(writer, config.Local);
@@ -813,6 +826,11 @@ public static class ConfigManager
 			WriteLaserSight(writer, config.LaserSight);
 			WriteStructures(writer, config.Structures);
 			WriteUI(writer, config.UI);
+			WriteAimbot(writer, config.Aimbot);
+			WriteSkills(writer, config.Skills);
+			WriteGameModifiers(writer, config.GameModifiers);
+			WriteTeleport(writer, config.Teleport);
+			WritePlayerEquipmentEsp(writer, config.PlayerEquipmentEsp);
 		});
 	}
 
@@ -832,33 +850,68 @@ public static class ConfigManager
 		}
 
 		ConfigData config = new ConfigData();
-		ReadLoot(reader, config.Loot);
-		ReadEnemies(reader, config.Enemies);
-		ReadMinimap(reader, config.Minimap);
+		ReadLoot(reader, config, version);
+		ReadEnemies(reader, config.Enemies, version);
+		ReadMinimap(reader, config.Minimap, version);
 		ReadLocal(reader, config.Local, version);
-		ReadMisc(reader, config.Misc);
-		ReadCompass(reader, config.Compass);
-		ReadPlayerEsp(reader, config.PlayerEsp);
-		ReadLaserSight(reader, config.LaserSight);
-		ReadStructures(reader, config.Structures);
+		ReadMisc(reader, config.Misc, version);
+		ReadCompass(reader, config.Compass, version);
+		ReadPlayerEsp(reader, config.PlayerEsp, version);
+		ReadLaserSight(reader, config.LaserSight, version);
+		ReadStructures(reader, config.Structures, version);
 		if (version >= 3)
 		{
-			ReadUI(reader, config.UI);
+			ReadUI(reader, config.UI, version);
+		}
+		if (version >= 7)
+		{
+			ReadAimbot(reader, config.Aimbot, version);
+		}
+		if (version >= 12)
+		{
+			ReadSkills(reader, config.Skills, version);
+		}
+		if (version >= 11)
+		{
+			ReadGameModifiers(reader, config.GameModifiers, version);
+		}
+		if (version >= 17)
+		{
+			ReadTeleport(reader, config.Teleport);
+		}
+		if (version >= 18)
+		{
+			ReadPlayerEquipmentEsp(reader, config.PlayerEquipmentEsp);
 		}
 		return config;
 	}
 
-	private static void WriteLoot(BinaryWriter writer, ConfigData.LootSettings settings)
+	private static void WriteLoot(BinaryWriter writer, ConfigData config)
 	{
+		var settings = config.Loot;
 		writer.Write(settings.Enabled);
 		writer.Write(settings.DrawTracers);
 		writer.Write(settings.DrawBox);
 		writer.Write(settings.DrawName);
 		writer.Write(settings.MaxDistance);
+		writer.Write(config.Specials.TokenBoxMaxDistance);
+		writer.Write(config.Specials.KeycardMaxDistance);
 		writer.Write(settings.MinValue);
 		writer.Write(settings.UseClustering);
 		writer.Write(settings.DynamicOpacity);
 		writer.Write(settings.ShowCartUI);
+		writer.Write(config.Specials.Enabled);
+		writer.Write(config.Specials.TokenBoxEnabled);
+		writer.Write(config.Specials.TokenBoxTracers);
+		writer.Write(config.Specials.TokenBoxBox);
+		writer.Write(config.Specials.TokenBoxName);
+		writer.Write(config.Specials.TokenBoxDistance);
+		writer.Write(config.Specials.TokenBoxInfo);
+		writer.Write(config.Specials.KeycardEnabled);
+		writer.Write(config.Specials.KeycardTracers);
+		writer.Write(config.Specials.KeycardBox);
+		writer.Write(config.Specials.KeycardName);
+		writer.Write(config.Specials.KeycardDistance);
 		writer.Write(settings.ItemInvulnerable);
 		WriteColor(writer, settings.EspColor);
 		writer.Write(settings.HighlightEnabled);
@@ -866,19 +919,70 @@ public static class ConfigManager
 		WriteColor(writer, settings.HighlightColorVisible);
 		WriteColor(writer, settings.HighlightColorOccluded);
 		WriteKeyCode(writer, settings.ToggleKey);
+		WriteKeyCode(writer, config.Specials.ToggleKey);
+		WriteKeyCode(writer, config.Specials.TokenBoxToggleKey);
+		WriteKeyCode(writer, config.Specials.KeycardToggleKey);
+		WriteKeyCode(writer, config.Specials.TokenBoxTracersKey);
+		WriteKeyCode(writer, config.Specials.TokenBoxBoxKey);
+		WriteKeyCode(writer, config.Specials.TokenBoxNameKey);
+		WriteKeyCode(writer, config.Specials.TokenBoxDistanceKey);
+		WriteKeyCode(writer, config.Specials.TokenBoxInfoKey);
+		WriteKeyCode(writer, config.Specials.KeycardTracersKey);
+		WriteKeyCode(writer, config.Specials.KeycardBoxKey);
+		WriteKeyCode(writer, config.Specials.KeycardNameKey);
+		WriteKeyCode(writer, config.Specials.KeycardDistanceKey);
+		WriteKeyCode(writer, settings.DrawTracersKey);
+		WriteKeyCode(writer, settings.DrawBoxKey);
+		WriteKeyCode(writer, settings.DrawNameKey);
+		WriteKeyCode(writer, settings.UseClusteringKey);
+		WriteKeyCode(writer, settings.DynamicOpacityKey);
+		WriteKeyCode(writer, settings.ShowCartUIKey);
+		WriteKeyCode(writer, settings.ItemInvulnerableKey);
+		WriteKeyCode(writer, settings.HighlightEnabledKey);
+		WriteKeyCode(writer, config.Carts.ToggleKey);
+		WriteKeyCode(writer, config.Carts.DrawTracersKey);
+		WriteKeyCode(writer, config.Carts.DrawBoxKey);
+		WriteKeyCode(writer, config.Carts.DrawNameKey);
+		WriteKeyCode(writer, config.Carts.DrawDistanceKey);
+		WriteKeyCode(writer, config.Carts.DrawInfoKey);
+		WriteColor(writer, config.Carts.Color);
+		WriteColor(writer, config.Specials.TokenBoxColor);
+		WriteColor(writer, config.Specials.KeycardColor);
 	}
 
-	private static void ReadLoot(BinaryReader reader, ConfigData.LootSettings settings)
+	private static void ReadLoot(BinaryReader reader, ConfigData config, int version)
 	{
+		var settings = config.Loot;
 		settings.Enabled = reader.ReadBoolean();
 		settings.DrawTracers = reader.ReadBoolean();
 		settings.DrawBox = reader.ReadBoolean();
 		settings.DrawName = reader.ReadBoolean();
 		settings.MaxDistance = reader.ReadSingle();
+		if (version >= 7)
+		{
+			config.Specials.TokenBoxMaxDistance = reader.ReadSingle();
+			config.Specials.KeycardMaxDistance = reader.ReadSingle();
+		}
 		settings.MinValue = reader.ReadInt32();
 		settings.UseClustering = reader.ReadBoolean();
 		settings.DynamicOpacity = reader.ReadBoolean();
 		settings.ShowCartUI = reader.ReadBoolean();
+		if (version >= 7)
+		{
+			config.Specials.Enabled = reader.ReadBoolean();
+			config.Specials.TokenBoxEnabled = reader.ReadBoolean();
+			config.Specials.TokenBoxTracers = reader.ReadBoolean();
+			config.Specials.TokenBoxBox = reader.ReadBoolean();
+			config.Specials.TokenBoxName = reader.ReadBoolean();
+			config.Specials.TokenBoxDistance = reader.ReadBoolean();
+			config.Specials.TokenBoxInfo = reader.ReadBoolean();
+			config.Specials.KeycardEnabled = reader.ReadBoolean();
+			config.Specials.KeycardTracers = reader.ReadBoolean();
+			config.Specials.KeycardBox = reader.ReadBoolean();
+			config.Specials.KeycardName = reader.ReadBoolean();
+			config.Specials.KeycardDistance = reader.ReadBoolean();
+		}
+
 		settings.ItemInvulnerable = reader.ReadBoolean();
 		settings.EspColor = ReadColor(reader);
 		settings.HighlightEnabled = reader.ReadBoolean();
@@ -886,6 +990,50 @@ public static class ConfigManager
 		settings.HighlightColorVisible = ReadColor(reader);
 		settings.HighlightColorOccluded = ReadColor(reader);
 		settings.ToggleKey = ReadKeyCode(reader);
+		if (version >= 7)
+		{
+			config.Specials.ToggleKey = ReadKeyCode(reader);
+			config.Specials.TokenBoxToggleKey = ReadKeyCode(reader);
+			config.Specials.KeycardToggleKey = ReadKeyCode(reader);
+			if (version >= 10)
+			{
+				config.Specials.TokenBoxTracersKey = ReadKeyCode(reader);
+				config.Specials.TokenBoxBoxKey = ReadKeyCode(reader);
+				config.Specials.TokenBoxNameKey = ReadKeyCode(reader);
+				config.Specials.TokenBoxDistanceKey = ReadKeyCode(reader);
+				config.Specials.TokenBoxInfoKey = ReadKeyCode(reader);
+				config.Specials.KeycardTracersKey = ReadKeyCode(reader);
+				config.Specials.KeycardBoxKey = ReadKeyCode(reader);
+				config.Specials.KeycardNameKey = ReadKeyCode(reader);
+				config.Specials.KeycardDistanceKey = ReadKeyCode(reader);
+			}
+		}
+		if (version >= 9)
+		{
+			try
+			{
+				settings.DrawTracersKey = ReadKeyCode(reader);
+				settings.DrawBoxKey = ReadKeyCode(reader);
+				settings.DrawNameKey = ReadKeyCode(reader);
+				settings.UseClusteringKey = ReadKeyCode(reader);
+				settings.DynamicOpacityKey = ReadKeyCode(reader);
+				settings.ShowCartUIKey = ReadKeyCode(reader);
+				settings.ItemInvulnerableKey = ReadKeyCode(reader);
+				settings.HighlightEnabledKey = ReadKeyCode(reader);
+				config.Carts.ToggleKey = ReadKeyCode(reader);
+				config.Carts.DrawTracersKey = ReadKeyCode(reader);
+				config.Carts.DrawBoxKey = ReadKeyCode(reader);
+				config.Carts.DrawNameKey = ReadKeyCode(reader);
+				config.Carts.DrawDistanceKey = ReadKeyCode(reader);
+				config.Carts.DrawInfoKey = ReadKeyCode(reader);
+			} catch { }
+		}
+		if (version >= 15)
+		{
+			config.Carts.Color = ReadColor(reader);
+			config.Specials.TokenBoxColor = ReadColor(reader);
+			config.Specials.KeycardColor = ReadColor(reader);
+		}
 	}
 
 	private static void WriteEnemies(BinaryWriter writer, ConfigData.EnemySettings settings)
@@ -900,16 +1048,33 @@ public static class ConfigManager
 		writer.Write(settings.DrawStatus);
 		writer.Write(settings.DrawPath);
 		writer.Write(settings.TargetWarning);
+		writer.Write(settings.VisibilityCheck);
 		writer.Write(settings.MaxDistance);
+		writer.Write(settings.BoxPaddingPixels);
+		writer.Write(settings.BoxSmoothingSeconds);
+		writer.Write(settings.BoxMinimumWidth);
+		writer.Write(settings.BoxMinimumHeight);
+		writer.Write(settings.BoxMaximumScreenFraction);
 		WriteColor(writer, settings.EspColor);
 		writer.Write(settings.HighlightEnabled);
 		writer.Write(settings.HighlightMaxDistance);
 		WriteColor(writer, settings.HighlightColor);
 		writer.Write(settings.RenderMethod);
 		WriteKeyCode(writer, settings.ToggleKey);
+		WriteKeyCode(writer, settings.VisibilityCheckKey);
+		WriteKeyCode(writer, settings.DrawTracersKey);
+		WriteKeyCode(writer, settings.DrawBoxKey);
+		WriteKeyCode(writer, settings.DrawHealthKey);
+		WriteKeyCode(writer, settings.DrawInfoKey);
+		WriteKeyCode(writer, settings.DrawDistanceKey);
+		WriteKeyCode(writer, settings.DrawStatusKey);
+		WriteKeyCode(writer, settings.DrawPathKey);
+		WriteKeyCode(writer, settings.TargetWarningKey);
+		WriteKeyCode(writer, settings.HighlightEnabledKey);
+		WriteColor(writer, settings.OccludedEspColor);
 	}
 
-	private static void ReadEnemies(BinaryReader reader, ConfigData.EnemySettings settings)
+	private static void ReadEnemies(BinaryReader reader, ConfigData.EnemySettings settings, int version)
 	{
 		settings.EspEnabled = reader.ReadBoolean();
 		settings.DrawTracers = reader.ReadBoolean();
@@ -921,13 +1086,56 @@ public static class ConfigManager
 		settings.DrawStatus = reader.ReadBoolean();
 		settings.DrawPath = reader.ReadBoolean();
 		settings.TargetWarning = reader.ReadBoolean();
+		if (version >= 8)
+		{
+			settings.VisibilityCheck = reader.ReadBoolean();
+		}
 		settings.MaxDistance = reader.ReadSingle();
+		if (version >= 16)
+		{
+			settings.BoxPaddingPixels = reader.ReadSingle();
+			settings.BoxSmoothingSeconds = reader.ReadSingle();
+			settings.BoxMinimumWidth = reader.ReadSingle();
+			settings.BoxMinimumHeight = reader.ReadSingle();
+			settings.BoxMaximumScreenFraction = reader.ReadSingle();
+		}
 		settings.EspColor = ReadColor(reader);
 		settings.HighlightEnabled = reader.ReadBoolean();
 		settings.HighlightMaxDistance = reader.ReadSingle();
+		if (version < 20)
+			settings.HighlightMaxDistance = 1000f;
 		settings.HighlightColor = ReadColor(reader);
-		settings.RenderMethod = reader.ReadInt32();
+		int renderMethod = reader.ReadInt32();
+		settings.RenderMethod = renderMethod == 2 ? 2 : renderMethod == 1 ? 1 : 0;
+		// Migrate the former standalone enemy highlight toggle into the unified style.
+		if (settings.HighlightEnabled)
+		{
+			settings.RenderMethod = 2;
+		}
 		settings.ToggleKey = ReadKeyCode(reader);
+		if (version >= 8)
+		{
+			settings.VisibilityCheckKey = ReadKeyCode(reader);
+		}
+		if (version >= 9)
+		{
+			try
+			{
+				settings.DrawTracersKey = ReadKeyCode(reader);
+				settings.DrawBoxKey = ReadKeyCode(reader);
+				settings.DrawHealthKey = ReadKeyCode(reader);
+				settings.DrawInfoKey = ReadKeyCode(reader);
+				settings.DrawDistanceKey = ReadKeyCode(reader);
+				settings.DrawStatusKey = ReadKeyCode(reader);
+				settings.DrawPathKey = ReadKeyCode(reader);
+				settings.TargetWarningKey = ReadKeyCode(reader);
+				settings.HighlightEnabledKey = ReadKeyCode(reader);
+			} catch { }
+		}
+		if (version >= 15)
+		{
+			settings.OccludedEspColor = ReadColor(reader);
+		}
 	}
 
 	private static void WriteMinimap(BinaryWriter writer, ConfigData.MinimapSettings settings)
@@ -945,9 +1153,12 @@ public static class ConfigManager
 		WriteKeyCode(writer, settings.ToggleFocusKey);
 		WriteKeyCode(writer, settings.ToggleRenderModeKey);
 		WriteKeyCode(writer, settings.ToggleKey);
+		WriteKeyCode(writer, settings.ShowIconsKey);
+		WriteKeyCode(writer, settings.AutoCenterKey);
+		WriteKeyCode(writer, settings.ShowPathKey);
 	}
 
-	private static void ReadMinimap(BinaryReader reader, ConfigData.MinimapSettings settings)
+	private static void ReadMinimap(BinaryReader reader, ConfigData.MinimapSettings settings, int version)
 	{
 		settings.Enabled = reader.ReadBoolean();
 		settings.ShowIcons = reader.ReadBoolean();
@@ -962,6 +1173,15 @@ public static class ConfigManager
 		settings.ToggleFocusKey = ReadKeyCode(reader);
 		settings.ToggleRenderModeKey = ReadKeyCode(reader);
 		settings.ToggleKey = ReadKeyCode(reader);
+		if (version >= 9)
+		{
+			try
+			{
+				settings.ShowIconsKey = ReadKeyCode(reader);
+				settings.AutoCenterKey = ReadKeyCode(reader);
+				settings.ShowPathKey = ReadKeyCode(reader);
+			} catch { }
+		}
 	}
 
 	private static void WriteLocal(BinaryWriter writer, ConfigData.LocalSettings settings)
@@ -978,15 +1198,32 @@ public static class ConfigManager
 		writer.Write(settings.Gravity);
 		writer.Write(settings.NoClip);
 		writer.Write(settings.NoRagdoll);
+		writer.Write(settings.SolidAim);
 		writer.Write(settings.RunSpeed);
 		writer.Write(settings.NoClipSpeed);
 		writer.Write(settings.NoClipFastMultiplier);
 		WriteKeyCode(writer, settings.GodModeKey);
 		WriteKeyCode(writer, settings.NoClipKey);
+		WriteKeyCode(writer, settings.NoRagdollKey);
+		WriteKeyCode(writer, settings.SolidAimKey);
 		WriteKeyCode(writer, settings.FreeCamToggleKey);
 		writer.Write(settings.FreeCamSpeed);
 		writer.Write(settings.FreeCamFastMultiplier);
 		writer.Write(settings.FreeCamSensitivity);
+		WriteKeyCode(writer, settings.InfiniteStaminaKey);
+		WriteKeyCode(writer, settings.InfiniteBatteryKey);
+		WriteKeyCode(writer, settings.RunSpeedEnabledKey);
+		WriteKeyCode(writer, settings.JumpForceEnabledKey);
+		WriteKeyCode(writer, settings.GravityEnabledKey);
+
+		writer.Write(settings.TumbleFly);
+		WriteKeyCode(writer, settings.TumbleFlyKey);
+		writer.Write(settings.ThirdPerson);
+		WriteKeyCode(writer, settings.ThirdPersonKey);
+		writer.Write(settings.ThirdPersonDistance);
+		writer.Write(settings.ThirdPersonHeight);
+		writer.Write(settings.ThirdPersonModelScale);
+		writer.Write(settings.ThirdPersonHorizontal);
 	}
 
 	private static void ReadLocal(BinaryReader reader, ConfigData.LocalSettings settings, int version)
@@ -1003,11 +1240,23 @@ public static class ConfigManager
 		settings.Gravity = reader.ReadSingle();
 		settings.NoClip = reader.ReadBoolean();
 		settings.NoRagdoll = reader.ReadBoolean();
+		if (version >= 6)
+		{
+			settings.SolidAim = reader.ReadBoolean();
+		}
 		settings.RunSpeed = reader.ReadSingle();
 		settings.NoClipSpeed = reader.ReadSingle();
 		settings.NoClipFastMultiplier = ((version >= 2) ? reader.ReadSingle() : 2f);
 		settings.GodModeKey = ReadKeyCode(reader);
 		settings.NoClipKey = ReadKeyCode(reader);
+		if (version >= 5)
+		{
+			settings.NoRagdollKey = ReadKeyCode(reader);
+			if (version >= 6)
+			{
+				settings.SolidAimKey = ReadKeyCode(reader);
+			}
+		}
 		if (version >= 4)
 		{
 			settings.FreeCamToggleKey = ReadKeyCode(reader);
@@ -1015,6 +1264,32 @@ public static class ConfigManager
 		settings.FreeCamSpeed = reader.ReadSingle();
 		settings.FreeCamFastMultiplier = reader.ReadSingle();
 		settings.FreeCamSensitivity = reader.ReadSingle();
+		if (version >= 9)
+		{
+			try
+			{
+				settings.InfiniteStaminaKey = ReadKeyCode(reader);
+				settings.InfiniteBatteryKey = ReadKeyCode(reader);
+				settings.RunSpeedEnabledKey = ReadKeyCode(reader);
+				settings.JumpForceEnabledKey = ReadKeyCode(reader);
+				settings.GravityEnabledKey = ReadKeyCode(reader);
+			} catch { }
+		}
+
+		if (version >= 11)
+		{
+			try
+			{
+				settings.TumbleFly = reader.ReadBoolean();
+				settings.TumbleFlyKey = ReadKeyCode(reader);
+				settings.ThirdPerson = reader.ReadBoolean();
+				settings.ThirdPersonKey = ReadKeyCode(reader);
+				settings.ThirdPersonDistance = reader.ReadSingle();
+				settings.ThirdPersonHeight = reader.ReadSingle();
+				settings.ThirdPersonModelScale = reader.ReadSingle();
+				settings.ThirdPersonHorizontal = reader.ReadSingle();
+			} catch { }
+		}
 	}
 
 	private static void WriteMisc(BinaryWriter writer, ConfigData.MiscSettings settings)
@@ -1029,9 +1304,26 @@ public static class ConfigManager
 		writer.Write(settings.FullbrightIntensity);
 		writer.Write(settings.NoFog);
 		writer.Write(settings.SetItemValue);
+		writer.Write(settings.GlobalItemInvincibility);
+		WriteKeyCode(writer, settings.CrosshairKey);
+		WriteKeyCode(writer, settings.ShowFpsKey);
+		WriteKeyCode(writer, settings.ShowKeybindsKey);
+		WriteKeyCode(writer, settings.FullbrightKey);
+		WriteKeyCode(writer, settings.NoFogKey);
+		WriteKeyCode(writer, settings.GlobalItemInvincibilityKey);
+		writer.Write(settings.DisableCameraMotion);
+		WriteKeyCode(writer, settings.DisableCameraMotionKey);
+		writer.Write(settings.DisableCameraShakeEffects);
+		WriteKeyCode(writer, settings.DisableCameraShakeEffectsKey);
+		writer.Write(settings.DisableGunRecoil);
+		WriteKeyCode(writer, settings.DisableGunRecoilKey);
+		writer.Write(settings.DisableGunCooldown);
+		WriteKeyCode(writer, settings.DisableGunCooldownKey);
+		writer.Write(settings.DisableItalicText);
+		WriteKeyCode(writer, settings.DisableItalicTextKey);
 	}
 
-	private static void ReadMisc(BinaryReader reader, ConfigData.MiscSettings settings)
+	private static void ReadMisc(BinaryReader reader, ConfigData.MiscSettings settings, int version)
 	{
 		settings.ToggleKey = ReadKeyCode(reader);
 		settings.Crosshair = reader.ReadBoolean();
@@ -1039,10 +1331,40 @@ public static class ConfigManager
 		settings.ShowKeybinds = reader.ReadBoolean();
 		settings.MenuAccent = ReadColor(reader);
 		settings.FOV = reader.ReadSingle();
+		if (version <= 10 && Math.Abs(settings.FOV - 60f) <= 0.01f)
+		{
+			settings.FOV = -1f;
+		}
 		settings.Fullbright = reader.ReadBoolean();
 		settings.FullbrightIntensity = reader.ReadSingle();
 		settings.NoFog = reader.ReadBoolean();
 		settings.SetItemValue = reader.ReadInt32();
+		if (version >= 9)
+		{
+			try
+			{
+				settings.GlobalItemInvincibility = reader.ReadBoolean();
+				settings.CrosshairKey = ReadKeyCode(reader);
+				settings.ShowFpsKey = ReadKeyCode(reader);
+				settings.ShowKeybindsKey = ReadKeyCode(reader);
+				settings.FullbrightKey = ReadKeyCode(reader);
+				settings.NoFogKey = ReadKeyCode(reader);
+				settings.GlobalItemInvincibilityKey = ReadKeyCode(reader);
+			} catch { }
+		}
+		if (version >= 21)
+		{
+			settings.DisableCameraMotion = reader.ReadBoolean();
+			settings.DisableCameraMotionKey = ReadKeyCode(reader);
+			settings.DisableCameraShakeEffects = reader.ReadBoolean();
+			settings.DisableCameraShakeEffectsKey = ReadKeyCode(reader);
+			settings.DisableGunRecoil = reader.ReadBoolean();
+			settings.DisableGunRecoilKey = ReadKeyCode(reader);
+			settings.DisableGunCooldown = reader.ReadBoolean();
+			settings.DisableGunCooldownKey = ReadKeyCode(reader);
+			settings.DisableItalicText = reader.ReadBoolean();
+			settings.DisableItalicTextKey = ReadKeyCode(reader);
+		}
 	}
 
 	private static void WriteCompass(BinaryWriter writer, ConfigData.CompassSettings settings)
@@ -1053,9 +1375,13 @@ public static class ConfigManager
 		writer.Write(settings.Scale);
 		writer.Write(settings.YOffset);
 		WriteKeyCode(writer, settings.ToggleKey);
+		writer.Write(settings.PositionX);
+		writer.Write(settings.PositionY);
+		writer.Write(settings.ShowPlayers);
+		writer.Write(settings.ShowDeathHeads);
 	}
 
-	private static void ReadCompass(BinaryReader reader, ConfigData.CompassSettings settings)
+	private static void ReadCompass(BinaryReader reader, ConfigData.CompassSettings settings, int version)
 	{
 		settings.Enabled = reader.ReadBoolean();
 		settings.Size = reader.ReadSingle();
@@ -1063,6 +1389,13 @@ public static class ConfigManager
 		settings.Scale = reader.ReadSingle();
 		settings.YOffset = reader.ReadSingle();
 		settings.ToggleKey = ReadKeyCode(reader);
+		if (version >= 19)
+		{
+			settings.PositionX = reader.ReadSingle();
+			settings.PositionY = reader.ReadSingle();
+			settings.ShowPlayers = reader.ReadBoolean();
+			settings.ShowDeathHeads = reader.ReadBoolean();
+		}
 	}
 
 	private static void WritePlayerEsp(BinaryWriter writer, ConfigData.PlayerEspSettings settings)
@@ -1071,20 +1404,40 @@ public static class ConfigManager
 		writer.Write(settings.DrawName);
 		writer.Write(settings.DrawHealth);
 		writer.Write(settings.DrawDistance);
+		writer.Write(settings.DrawLine);
 		writer.Write(settings.DrawHeldItem);
 		WriteColor(writer, settings.Color);
 		WriteColor(writer, settings.EquipmentColor);
+		WriteKeyCode(writer, settings.ToggleKey);
+		WriteKeyCode(writer, settings.DrawNameKey);
+		WriteKeyCode(writer, settings.DrawHealthKey);
+		WriteKeyCode(writer, settings.DrawDistanceKey);
+		WriteKeyCode(writer, settings.DrawLineKey);
+		WriteKeyCode(writer, settings.DrawHeldItemKey);
 	}
 
-	private static void ReadPlayerEsp(BinaryReader reader, ConfigData.PlayerEspSettings settings)
+	private static void ReadPlayerEsp(BinaryReader reader, ConfigData.PlayerEspSettings settings, int version)
 	{
 		settings.Enabled = reader.ReadBoolean();
 		settings.DrawName = reader.ReadBoolean();
 		settings.DrawHealth = reader.ReadBoolean();
 		settings.DrawDistance = reader.ReadBoolean();
+		try { settings.DrawLine = reader.ReadBoolean(); } catch { }
 		settings.DrawHeldItem = reader.ReadBoolean();
 		settings.Color = ReadColor(reader);
 		settings.EquipmentColor = ReadColor(reader);
+		if (version >= 9)
+		{
+			try
+			{
+				settings.ToggleKey = ReadKeyCode(reader);
+				settings.DrawNameKey = ReadKeyCode(reader);
+				settings.DrawHealthKey = ReadKeyCode(reader);
+				settings.DrawDistanceKey = ReadKeyCode(reader);
+				settings.DrawLineKey = ReadKeyCode(reader);
+				settings.DrawHeldItemKey = ReadKeyCode(reader);
+			} catch { }
+		}
 	}
 
 	private static void WriteLaserSight(BinaryWriter writer, ConfigData.LaserSightSettings settings)
@@ -1095,9 +1448,13 @@ public static class ConfigManager
 		writer.Write(settings.ShowHitInfo);
 		WriteColor(writer, settings.Color);
 		writer.Write(settings.Width);
+		WriteKeyCode(writer, settings.ToggleKey);
+		WriteKeyCode(writer, settings.ShowLocalKey);
+		WriteKeyCode(writer, settings.ShowOthersKey);
+		WriteKeyCode(writer, settings.ShowHitInfoKey);
 	}
 
-	private static void ReadLaserSight(BinaryReader reader, ConfigData.LaserSightSettings settings)
+	private static void ReadLaserSight(BinaryReader reader, ConfigData.LaserSightSettings settings, int version)
 	{
 		settings.Enabled = reader.ReadBoolean();
 		settings.ShowLocal = reader.ReadBoolean();
@@ -1105,6 +1462,16 @@ public static class ConfigManager
 		settings.ShowHitInfo = reader.ReadBoolean();
 		settings.Color = ReadColor(reader);
 		settings.Width = reader.ReadSingle();
+		if (version >= 9)
+		{
+			try
+			{
+				settings.ToggleKey = ReadKeyCode(reader);
+				settings.ShowLocalKey = ReadKeyCode(reader);
+				settings.ShowOthersKey = ReadKeyCode(reader);
+				settings.ShowHitInfoKey = ReadKeyCode(reader);
+			} catch { }
+		}
 	}
 
 	private static void WriteStructures(BinaryWriter writer, ConfigData.StructureEspSettings settings)
@@ -1120,9 +1487,16 @@ public static class ConfigManager
 		WriteColor(writer, settings.ExtractionPointColor);
 		WriteColor(writer, settings.EvacuationPointColor);
 		WriteColor(writer, settings.TrapColor);
+		WriteKeyCode(writer, settings.ExtractionPointsEnabledKey);
+		WriteKeyCode(writer, settings.EvacuationPointsEnabledKey);
+		WriteKeyCode(writer, settings.TrapsEnabledKey);
+		WriteKeyCode(writer, settings.DrawTracersKey);
+		WriteKeyCode(writer, settings.DrawBoxKey);
+		WriteKeyCode(writer, settings.DrawNameKey);
+		WriteKeyCode(writer, settings.DrawDistanceKey);
 	}
 
-	private static void ReadStructures(BinaryReader reader, ConfigData.StructureEspSettings settings)
+	private static void ReadStructures(BinaryReader reader, ConfigData.StructureEspSettings settings, int version)
 	{
 		settings.ExtractionPointsEnabled = reader.ReadBoolean();
 		settings.EvacuationPointsEnabled = reader.ReadBoolean();
@@ -1135,6 +1509,232 @@ public static class ConfigManager
 		settings.ExtractionPointColor = ReadColor(reader);
 		settings.EvacuationPointColor = ReadColor(reader);
 		settings.TrapColor = ReadColor(reader);
+		if (version >= 9)
+		{
+			try
+			{
+				settings.ExtractionPointsEnabledKey = ReadKeyCode(reader);
+				settings.EvacuationPointsEnabledKey = ReadKeyCode(reader);
+				settings.TrapsEnabledKey = ReadKeyCode(reader);
+				settings.DrawTracersKey = ReadKeyCode(reader);
+				settings.DrawBoxKey = ReadKeyCode(reader);
+				settings.DrawNameKey = ReadKeyCode(reader);
+				settings.DrawDistanceKey = ReadKeyCode(reader);
+			} catch { }
+		}
+	}
+
+	private static void WriteAimbot(BinaryWriter writer, ConfigData.AimbotSettings settings)
+	{
+		writer.Write(settings.Enabled);
+		WriteKeyCode(writer, settings.ToggleKey);
+		writer.Write(settings.DrawFov);
+		WriteKeyCode(writer, settings.DrawFovKey);
+		writer.Write(settings.FovRadius);
+		writer.Write(settings.Smoothness);
+		writer.Write(settings.CheckVisibility);
+		WriteKeyCode(writer, settings.CheckVisibilityKey);
+		WriteKeyCode(writer, settings.AimKey);
+	}
+
+	private static void ReadAimbot(BinaryReader reader, ConfigData.AimbotSettings settings, int version)
+	{
+		settings.Enabled = reader.ReadBoolean();
+		settings.ToggleKey = ReadKeyCode(reader);
+		settings.DrawFov = reader.ReadBoolean();
+		settings.DrawFovKey = ReadKeyCode(reader);
+		settings.FovRadius = reader.ReadSingle();
+		settings.Smoothness = reader.ReadSingle();
+		settings.CheckVisibility = reader.ReadBoolean();
+		settings.CheckVisibilityKey = ReadKeyCode(reader);
+		settings.AimKey = ReadKeyCode(reader);
+	}
+
+	private static void WriteSkills(BinaryWriter writer, ConfigData.SkillSettings settings)
+	{
+		writer.Write(settings.Stamina);
+		writer.Write(settings.Health);
+		writer.Write(settings.TumbleWings);
+		writer.Write(settings.CrouchRest);
+		writer.Write(settings.DeathHeadBattery);
+		writer.Write(settings.Launch);
+		writer.Write(settings.MapPlayerCount);
+		writer.Write(settings.Throw);
+		writer.Write(settings.TumbleClimb);
+	}
+
+	private static void ReadSkills(BinaryReader reader, ConfigData.SkillSettings settings, int version)
+	{
+		if (version >= 14)
+		{
+			try
+			{
+				settings.Stamina = reader.ReadInt32();
+				settings.Health = reader.ReadInt32();
+				settings.TumbleWings = reader.ReadInt32();
+				settings.CrouchRest = reader.ReadInt32();
+				settings.DeathHeadBattery = reader.ReadInt32();
+				settings.Launch = reader.ReadInt32();
+				settings.MapPlayerCount = reader.ReadInt32();
+				settings.Throw = reader.ReadInt32();
+				settings.TumbleClimb = reader.ReadInt32();
+			} catch { }
+		}
+		else if (version >= 12)
+		{
+			// Consume the legacy 13-field block while retaining only skill values still shown in the UI.
+			try
+			{
+				reader.ReadInt32(); // Speed, now controlled on the Player page.
+				settings.Stamina = reader.ReadInt32();
+				settings.Health = reader.ReadInt32();
+				reader.ReadInt32(); // ExtraJump, superseded by the Player page jump control.
+				settings.TumbleWings = reader.ReadInt32();
+				settings.CrouchRest = reader.ReadInt32();
+				settings.DeathHeadBattery = reader.ReadInt32();
+				settings.Launch = reader.ReadInt32();
+				settings.MapPlayerCount = reader.ReadInt32();
+				reader.ReadInt32(); // Range, now controlled on the Player page.
+				reader.ReadInt32(); // Strength, now controlled on the Player page.
+				settings.Throw = reader.ReadInt32();
+				settings.TumbleClimb = reader.ReadInt32();
+			} catch { }
+		}
+	}
+
+	private static void WriteGameModifiers(BinaryWriter writer, ConfigData.GameModifiersSettings settings)
+	{
+		writer.Write(settings.AllTeammatesGodMode);
+		WriteKeyCode(writer, settings.AllTeammatesGodModeKey);
+		writer.Write(settings.InfiniteWeaponBattery);
+		WriteKeyCode(writer, settings.InfiniteWeaponBatteryKey);
+		writer.Write(settings.InfiniteChargingStation);
+		WriteKeyCode(writer, settings.InfiniteChargingStationKey);
+		writer.Write(settings.ChargingStationHeal);
+		WriteKeyCode(writer, settings.ChargingStationHealKey);
+		writer.Write(settings.RemovePillarLimit);
+		WriteKeyCode(writer, settings.RemovePillarLimitKey);
+		writer.Write(settings.PillarDropMultiplierEnabled);
+		writer.Write(settings.PillarDropMultiplier);
+		writer.Write(settings.TeammateDeathDropBead);
+		writer.Write(settings.TeammateReviveDropBead);
+		writer.Write(settings.AutoReviveTeammates);
+		WriteKeyCode(writer, settings.AutoReviveTeammatesKey);
+		writer.Write(settings.AutoReviveWhenSeen);
+		writer.Write(settings.ReviveHeadOnTruck);
+		writer.Write(settings.ReviveHeadOnExtraction);
+		writer.Write(settings.ReviveHeadOnCart);
+		writer.Write(settings.ReviveAutoToTruck);
+		writer.Write(settings.DeathAutoToTruck);
+		writer.Write(settings.DeathAutoToExtraction);
+		writer.Write(settings.SpawnRateMultiplier);
+		writer.Write(settings.LimitActionAndOvercharge);
+		WriteKeyCode(writer, settings.PillarDropMultiplierEnabledKey);
+		WriteKeyCode(writer, settings.TeammateDeathDropBeadKey);
+		WriteKeyCode(writer, settings.TeammateReviveDropBeadKey);
+		WriteKeyCode(writer, settings.AutoReviveWhenSeenKey);
+		WriteKeyCode(writer, settings.ReviveHeadOnTruckKey);
+		WriteKeyCode(writer, settings.ReviveHeadOnExtractionKey);
+		WriteKeyCode(writer, settings.ReviveHeadOnCartKey);
+		WriteKeyCode(writer, settings.ReviveAutoToTruckKey);
+		WriteKeyCode(writer, settings.DeathAutoToTruckKey);
+		WriteKeyCode(writer, settings.DeathAutoToExtractionKey);
+		WriteKeyCode(writer, settings.LimitActionAndOverchargeKey);
+	}
+
+	private static void WriteTeleport(BinaryWriter writer, ConfigData.TeleportSettings settings)
+	{
+		writer.Write(settings.MaxDistance);
+		writer.Write(settings.CooldownSeconds);
+		writer.Write(settings.KeepPhysics);
+	}
+
+	private static void ReadTeleport(BinaryReader reader, ConfigData.TeleportSettings settings)
+	{
+		settings.MaxDistance = Mathf.Clamp(reader.ReadSingle(), 1f, 10000f);
+		settings.CooldownSeconds = Mathf.Clamp(reader.ReadSingle(), 0f, 30f);
+		settings.KeepPhysics = reader.ReadBoolean();
+	}
+
+	private static void WritePlayerEquipmentEsp(BinaryWriter writer, ConfigData.PlayerEquipmentEspSettings settings)
+	{
+		writer.Write(settings.Enabled);
+		WriteKeyCode(writer, settings.ToggleKey);
+		writer.Write(settings.DrawBox);
+		WriteKeyCode(writer, settings.DrawBoxKey);
+		writer.Write(settings.DrawName);
+		WriteKeyCode(writer, settings.DrawNameKey);
+		writer.Write(settings.DrawDistance);
+		WriteKeyCode(writer, settings.DrawDistanceKey);
+		writer.Write(settings.DrawTracers);
+		WriteKeyCode(writer, settings.DrawTracersKey);
+		writer.Write(settings.MaxDistance);
+		WriteColor(writer, settings.Color);
+	}
+
+	private static void ReadPlayerEquipmentEsp(BinaryReader reader, ConfigData.PlayerEquipmentEspSettings settings)
+	{
+		settings.Enabled = reader.ReadBoolean();
+		settings.ToggleKey = ReadKeyCode(reader);
+		settings.DrawBox = reader.ReadBoolean();
+		settings.DrawBoxKey = ReadKeyCode(reader);
+		settings.DrawName = reader.ReadBoolean();
+		settings.DrawNameKey = ReadKeyCode(reader);
+		settings.DrawDistance = reader.ReadBoolean();
+		settings.DrawDistanceKey = ReadKeyCode(reader);
+		settings.DrawTracers = reader.ReadBoolean();
+		settings.DrawTracersKey = ReadKeyCode(reader);
+		settings.MaxDistance = Mathf.Clamp(reader.ReadSingle(), 10f, 1000f);
+		settings.Color = ReadColor(reader);
+	}
+
+	private static void ReadGameModifiers(BinaryReader reader, ConfigData.GameModifiersSettings settings, int version)
+	{
+		if (version >= 11)
+		{
+			try
+			{
+				settings.AllTeammatesGodMode = reader.ReadBoolean();
+				settings.AllTeammatesGodModeKey = ReadKeyCode(reader);
+				settings.InfiniteWeaponBattery = reader.ReadBoolean();
+				settings.InfiniteWeaponBatteryKey = ReadKeyCode(reader);
+				settings.InfiniteChargingStation = reader.ReadBoolean();
+				settings.InfiniteChargingStationKey = ReadKeyCode(reader);
+				settings.ChargingStationHeal = reader.ReadBoolean();
+				settings.ChargingStationHealKey = ReadKeyCode(reader);
+				settings.RemovePillarLimit = reader.ReadBoolean();
+				settings.RemovePillarLimitKey = ReadKeyCode(reader);
+				settings.PillarDropMultiplierEnabled = reader.ReadBoolean();
+				settings.PillarDropMultiplier = reader.ReadInt32();
+				settings.TeammateDeathDropBead = reader.ReadBoolean();
+				settings.TeammateReviveDropBead = reader.ReadBoolean();
+				settings.AutoReviveTeammates = reader.ReadBoolean();
+				settings.AutoReviveTeammatesKey = ReadKeyCode(reader);
+				settings.AutoReviveWhenSeen = reader.ReadBoolean();
+				settings.ReviveHeadOnTruck = reader.ReadBoolean();
+				settings.ReviveHeadOnExtraction = reader.ReadBoolean();
+				settings.ReviveHeadOnCart = reader.ReadBoolean();
+				settings.ReviveAutoToTruck = reader.ReadBoolean();
+				settings.DeathAutoToTruck = reader.ReadBoolean();
+				settings.DeathAutoToExtraction = reader.ReadBoolean();
+				settings.SpawnRateMultiplier = reader.ReadSingle();
+				settings.LimitActionAndOvercharge = reader.ReadBoolean();
+				if (version >= 13)
+				{
+					settings.PillarDropMultiplierEnabledKey = ReadKeyCode(reader);
+					settings.TeammateDeathDropBeadKey = ReadKeyCode(reader);
+					settings.TeammateReviveDropBeadKey = ReadKeyCode(reader);
+					settings.AutoReviveWhenSeenKey = ReadKeyCode(reader);
+					settings.ReviveHeadOnTruckKey = ReadKeyCode(reader);
+					settings.ReviveHeadOnExtractionKey = ReadKeyCode(reader);
+					settings.ReviveHeadOnCartKey = ReadKeyCode(reader);
+					settings.ReviveAutoToTruckKey = ReadKeyCode(reader);
+					settings.DeathAutoToTruckKey = ReadKeyCode(reader);
+					settings.DeathAutoToExtractionKey = ReadKeyCode(reader);
+					settings.LimitActionAndOverchargeKey = ReadKeyCode(reader);
+				}
+			} catch { }
+		}
 	}
 
 	private static void WriteUI(BinaryWriter writer, ConfigData.UiSettings settings)
@@ -1142,7 +1742,7 @@ public static class ConfigManager
 		WriteKeyCode(writer, settings.MenuToggleKey);
 	}
 
-	private static void ReadUI(BinaryReader reader, ConfigData.UiSettings settings)
+	private static void ReadUI(BinaryReader reader, ConfigData.UiSettings settings, int version)
 	{
 		settings.MenuToggleKey = ReadKeyCode(reader);
 	}

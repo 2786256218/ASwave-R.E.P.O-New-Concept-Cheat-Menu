@@ -35,6 +35,17 @@ public class PlayerEsp
 
 	private static Dictionary<int, float> _chamsLastUpdateTime = new Dictionary<int, float>();
 
+	// Keep only a short, screen-space presentation history. Bounds continue to
+	// come from the interpolated visual model; this rejects one-frame network
+	// spikes without letting a stale world transform drag the box across screen.
+	private sealed class PlayerBoxState
+	{
+		public Rect rect;
+		public float updatedAt;
+	}
+
+	private static readonly Dictionary<int, PlayerBoxState> _playerBoxStates = new Dictionary<int, PlayerBoxState>();
+
 	private static Material _chamsMaterial;
 
 	private static readonly Vector3 PlayerFallbackSize = new Vector3(0.8f, 1.8f, 0.8f);
@@ -292,17 +303,25 @@ public class PlayerEsp
 			{
 				continue;
 			}
-			Vector3 position = ((Component)player).transform.position;
+			Transform visualRoot = GetPlayerVisualRoot(player);
+			Vector3 position = visualRoot != null ? visualRoot.position : ((Component)player).transform.position;
 			float num3 = Vector3.Distance(((Component)main).transform.position, position);
-			Renderer[] componentsInChildren = ((Component)player).GetComponentsInChildren<Renderer>(true);
-			if (!EspProjectionUtils.TryGetScreenRect(main, ((Component)player).transform, componentsInChildren, ShouldUsePlayerRenderer, position + Vector3.up, PlayerFallbackSize, 34f, 76f, out val3))
+			Renderer[] componentsInChildren = GetPlayerRenderers(player);
+			if (!TryGetStablePlayerRect(main, player, componentsInChildren, position + Vector3.up, PlayerFallbackSize, 4f, 8f, out val3))
 			{
 				continue;
 			}
 			float width = val3.width;
 			float height = val3.height;
 			Color color = ConfigManager.Config.PlayerEsp.Color;
-			DrawCornerBox(val3, color, 1.6f);
+			Render.DrawEspBox(val3, color, 1.6f, ConfigManager.Config.Enemies.RenderMethod);
+
+			if (ConfigManager.Config.PlayerEsp.DrawLine)
+			{
+				Vector2 bottomCenter = new Vector2(val3.x + width / 2f, val3.y + height);
+				Vector2 screenBottom = new Vector2((float)Screen.width / 2f, Screen.height);
+				Render.DrawLine(screenBottom, bottomCenter, color, 1.5f);
+			}
 			if (ConfigManager.Config.PlayerEsp.DrawHealth && (UnityEngine.Object)(object)player.playerHealth != (UnityEngine.Object)null)
 			{
 				int num10 = ((_healthCurrentField != null) ? ((int)_healthCurrentField.GetValue(player.playerHealth)) : 0);
@@ -342,10 +361,13 @@ public class PlayerEsp
 					{
 						color3 = ConfigManager.Config.PlayerEsp.EquipmentColor;
 						start = new Vector2(val3.x + width / 2f, val3.y + height / 2f);
-						Render.DrawLine(start, new Vector2(val5.x, val5.y), color3, 1.5f);
+						if (ConfigManager.Config.PlayerEsp.DrawLine)
+						{
+							Render.DrawLine(start, new Vector2(val5.x, val5.y), color3, 1.5f);
+						}
 						float num17 = 10f;
 						rect = new Rect(val5.x - num17 / 2f, val5.y - num17 / 2f, num17, num17);
-						Render.DrawBoxGraphics(rect, color3);
+						Render.DrawEspBox(rect, color3, 1.2f, ConfigManager.Config.Enemies.RenderMethod);
 					}
 				}
 			}
@@ -402,11 +424,12 @@ public class PlayerEsp
 				Render.DrawStringOutlined(new Rect(num20, num21, val7.x, val7.y), text3, Color.yellow, center: true, fontSize2);
 			}
 		}
-		PlayerDeathHead[] array = UnityEngine.Object.FindObjectsOfType<PlayerDeathHead>(true);
+		PlayerDeathHead[] array = UnityEngine.Object.FindObjectsByType<PlayerDeathHead>(FindObjectsInactive.Include, FindObjectsSortMode.None);
 		foreach (PlayerDeathHead val8 in array)
 		{
 			DrawDeathHead(main, val8);
 		}
+		PrunePlayerBoxStates();
 	}
 
 	private static void DrawDeathHead(Camera mainCamera, PlayerDeathHead deathHead)
@@ -424,7 +447,7 @@ public class PlayerEsp
 		PhysGrabObject fieldValue = ReflectionUtils.GetFieldValue<PhysGrabObject>(deathHead, "physGrabObject");
 		Vector3 val = (((UnityEngine.Object)(object)fieldValue != (UnityEngine.Object)null) ? fieldValue.centerPoint : ((Component)deathHead).transform.position);
 		Rect val2;
-		if (!EspProjectionUtils.TryGetScreenRect(mainCamera, ((Component)deathHead).transform, componentsInChildren, ShouldUsePlayerRenderer, val, DeathHeadFallbackSize, 28f, 52f, out val2))
+		if (!TryGetStableRect(mainCamera, deathHead, componentsInChildren, val, DeathHeadFallbackSize, 4f, 6f, out val2))
 		{
 			return;
 		}
@@ -432,7 +455,7 @@ public class PlayerEsp
 		float height = val2.height;
 		float num = Vector3.Distance(((Component)mainCamera).transform.position, val);
 		Color color = ConfigManager.Config.PlayerEsp.Color;
-		DrawCornerBox(val2, color, 1.6f);
+		Render.DrawEspBox(val2, color, 1.6f, ConfigManager.Config.Enemies.RenderMethod);
 		if (ConfigManager.Config.PlayerEsp.DrawHealth && (UnityEngine.Object)(object)playerAvatar.playerHealth != (UnityEngine.Object)null)
 		{
 			int currentHealth;
@@ -509,7 +532,221 @@ public class PlayerEsp
 
 	private static bool ShouldUsePlayerRenderer(Renderer renderer)
 	{
-		return !ShouldIgnoreRenderer(renderer) && renderer.enabled;
+		return !ShouldIgnoreRenderer(renderer) && renderer.enabled && renderer.gameObject.activeInHierarchy;
+	}
+
+	private static bool TryGetStablePlayerRect(Camera camera, PlayerAvatar player, Renderer[] renderers, Vector3 fallbackCenter, Vector3 fallbackSize, float minWidth, float minHeight, out Rect rect)
+	{
+		rect = default(Rect);
+		if (player == null || camera == null || !TryGetPlayerWorldBounds(player, renderers, out Bounds bounds))
+			return false;
+
+		if (!EspProjectionUtils.TryGetScreenRect(camera, bounds, minWidth, minHeight, out Rect measured))
+			return false;
+		measured = AddPlayerPaddingAndClip(measured, 2f);
+		if (measured.width <= 0f || measured.height <= 0f)
+			return false;
+
+		int id = player.GetInstanceID();
+		float now = Time.unscaledTime;
+		PlayerBoxState state;
+		if (_playerBoxStates.TryGetValue(id, out state))
+		{
+			float age = now - state.updatedAt;
+			float centerDelta = Vector2.Distance(state.rect.center, measured.center);
+			float sizeRatio = Mathf.Max(measured.width / Mathf.Max(state.rect.width, 1f), state.rect.width / Mathf.Max(measured.width, 1f),
+				measured.height / Mathf.Max(state.rect.height, 1f), state.rect.height / Mathf.Max(measured.height, 1f));
+			float spikeLimit = Mathf.Max(72f, Mathf.Max(state.rect.height, measured.height) * 1.35f);
+			if (age < 0.12f && (centerDelta > spikeLimit || sizeRatio > 2.8f))
+			{
+				// A single remote-transform correction can produce a bogus renderer
+				// bounds sample. Hold the last rendered rect briefly and recover as
+				// soon as consecutive samples agree.
+				rect = state.rect;
+				return rect.width > 0f && rect.height > 0f;
+			}
+
+			float blend = age > 0.25f ? 1f : 1f - Mathf.Exp(-nowDelta() / 0.055f);
+			Rect smoothed = LerpRect(state.rect, measured, Mathf.Clamp(blend, 0.35f, 1f));
+			state.rect = smoothed;
+			state.updatedAt = now;
+			rect = smoothed;
+		}
+		else
+		{
+			state = new PlayerBoxState { rect = measured, updatedAt = now };
+			_playerBoxStates[id] = state;
+			rect = measured;
+		}
+		return rect.width > 0f && rect.height > 0f;
+	}
+
+	private static float nowDelta()
+	{
+		return Mathf.Clamp(Time.unscaledDeltaTime, 0f, 0.05f);
+	}
+
+	private static Rect LerpRect(Rect from, Rect to, float t)
+	{
+		Vector2 center = Vector2.Lerp(from.center, to.center, t);
+		Vector2 size = Vector2.Lerp(new Vector2(from.width, from.height), new Vector2(to.width, to.height), t);
+		return new Rect(center.x - size.x * 0.5f, center.y - size.y * 0.5f, size.x, size.y);
+	}
+
+	private static void PrunePlayerBoxStates()
+	{
+		if (_playerBoxStates.Count == 0)
+			return;
+		List<int> stale = new List<int>();
+		foreach (KeyValuePair<int, PlayerBoxState> entry in _playerBoxStates)
+			if (Time.unscaledTime - entry.Value.updatedAt > 2f)
+				stale.Add(entry.Key);
+		foreach (int id in stale)
+			_playerBoxStates.Remove(id);
+	}
+
+	private static bool TryGetStableRect(Camera camera, Component target, Renderer[] renderers, Vector3 fallbackCenter, Vector3 fallbackSize, float minWidth, float minHeight, out Rect rect)
+	{
+		rect = default(Rect);
+		if ((UnityEngine.Object)(object)camera == (UnityEngine.Object)null || (UnityEngine.Object)(object)target == (UnityEngine.Object)null)
+			return false;
+		if (!EspProjectionUtils.TryGetScreenRect(camera, target.transform, renderers, ShouldUsePlayerRenderer,
+			fallbackCenter, fallbackSize, minWidth, minHeight, out rect))
+			return false;
+		rect = AddPlayerPaddingAndClip(rect, 2f);
+		return rect.width > 0f && rect.height > 0f;
+	}
+
+	private static Transform GetPlayerVisualRoot(PlayerAvatar player)
+	{
+		if (player == null)
+			return null;
+		PlayerAvatarVisuals visuals = player.playerAvatarVisuals;
+		// PlayerAvatarVisuals is moved each frame using the game's interpolated
+		// remote position. meshParent is only the model container and can have
+		// its own local offset, so it must not be used as the positional anchor.
+		return visuals != null ? visuals.transform : player.transform;
+	}
+
+	private static Renderer[] GetPlayerRenderers(PlayerAvatar player)
+	{
+		if (player == null)
+			return System.Array.Empty<Renderer>();
+		PlayerAvatarVisuals visuals = player.playerAvatarVisuals;
+		if (visuals != null && visuals.meshParent != null)
+			return visuals.meshParent.GetComponentsInChildren<Renderer>(true);
+		Transform visualRoot = GetPlayerVisualRoot(player);
+		return visualRoot != null ? visualRoot.GetComponentsInChildren<Renderer>(true) : player.GetComponentsInChildren<Renderer>(true);
+	}
+
+	private static bool TryGetPlayerWorldBounds(PlayerAvatar player, Renderer[] renderers, out Bounds bounds)
+	{
+		bounds = default(Bounds);
+		if (player == null)
+			return false;
+
+		bool hasBounds = false;
+		Transform visualRoot = GetPlayerVisualRoot(player);
+		foreach (Renderer renderer in renderers ?? System.Array.Empty<Renderer>())
+		{
+			if (!ShouldUsePlayerRenderer(renderer))
+				continue;
+
+			AddBounds(renderer.bounds, ref bounds, ref hasBounds);
+			SkinnedMeshRenderer skinned = renderer as SkinnedMeshRenderer;
+			if (skinned != null)
+				AddBounds(TransformLocalBounds(skinned.localBounds, skinned.transform), ref bounds, ref hasBounds);
+			MeshFilter meshFilter = renderer.GetComponent<MeshFilter>();
+			if (meshFilter != null && meshFilter.sharedMesh != null)
+				AddBounds(TransformLocalBounds(meshFilter.sharedMesh.bounds, meshFilter.transform), ref bounds, ref hasBounds);
+		}
+
+		// PlayerTumble owns the native body collider used while the avatar is
+		// physically tumbling. Fuse it with the rendered model when available.
+		PlayerTumble tumble = ReflectionUtils.GetFieldValue<PlayerTumble>(player, "tumble");
+		if (tumble != null)
+		{
+			Collider[] colliders = tumble.GetComponentsInChildren<Collider>(true);
+			foreach (Collider collider in colliders)
+			{
+				if (collider != null && collider.enabled && !collider.isTrigger && collider.gameObject.activeInHierarchy)
+					AddBounds(collider.bounds, ref bounds, ref hasBounds);
+			}
+		}
+
+		Transform anchor = visualRoot != null ? visualRoot : player.transform;
+		if (!hasBounds)
+		{
+			bool crawling = _isCrawlingField != null && (bool)_isCrawlingField.GetValue(player);
+			bool crouching = _isCrouchingField != null && (bool)_isCrouchingField.GetValue(player);
+			float fallbackHeight = crawling ? 0.85f : crouching ? 1.25f : 1.8f;
+			bounds = new Bounds(anchor.position + Vector3.up * (fallbackHeight * 0.5f), new Vector3(0.8f, fallbackHeight, 0.8f));
+			hasBounds = true;
+		}
+
+		// Some player skins ship with incomplete SkinnedMeshRenderer bounds.
+		// Expand undersized bounds around the interpolated visual root so the
+		// outline encloses the full body instead of a single mesh fragment.
+		if (hasBounds && (player.playerAvatarVisuals == null || player.playerAvatarVisuals.currentPose != PlayerAvatarVisuals.Pose.Tumble))
+		{
+			bool crawling = player.playerAvatarVisuals != null
+				? player.playerAvatarVisuals.currentPose == PlayerAvatarVisuals.Pose.Crawl
+				: _isCrawlingField != null && (bool)_isCrawlingField.GetValue(player);
+			bool crouching = player.playerAvatarVisuals != null
+				? player.playerAvatarVisuals.currentPose == PlayerAvatarVisuals.Pose.Crouch
+				: _isCrouchingField != null && (bool)_isCrouchingField.GetValue(player);
+			float minimumHeight = crawling ? 0.9f : crouching ? 1.35f : 1.75f;
+			float minimumWidth = crawling ? 1.15f : 0.8f;
+			Bounds poseFallback = new Bounds(anchor.position + Vector3.up * (minimumHeight * 0.5f), new Vector3(minimumWidth, minimumHeight, minimumWidth));
+			// Always include the complete pose envelope: some cosmetic/model
+			// renderer bounds cover only the torso or a single animated part.
+			bounds.Encapsulate(poseFallback);
+		}
+
+		return hasBounds;
+	}
+
+	private static Bounds TransformLocalBounds(Bounds localBounds, Transform target)
+	{
+		Vector3 center = target.TransformPoint(localBounds.center);
+		Vector3 extents = localBounds.extents;
+		Vector3 axisX = target.TransformVector(new Vector3(extents.x, 0f, 0f));
+		Vector3 axisY = target.TransformVector(new Vector3(0f, extents.y, 0f));
+		Vector3 axisZ = target.TransformVector(new Vector3(0f, 0f, extents.z));
+		Vector3 worldExtents = new Vector3(
+			Mathf.Abs(axisX.x) + Mathf.Abs(axisY.x) + Mathf.Abs(axisZ.x),
+			Mathf.Abs(axisX.y) + Mathf.Abs(axisY.y) + Mathf.Abs(axisZ.y),
+			Mathf.Abs(axisX.z) + Mathf.Abs(axisY.z) + Mathf.Abs(axisZ.z));
+		return new Bounds(center, worldExtents * 2f);
+	}
+
+	private static void AddBounds(Bounds candidate, ref Bounds combined, ref bool hasBounds)
+	{
+		Vector3 size = candidate.size;
+		Vector3 center = candidate.center;
+		if (float.IsNaN(center.x) || float.IsNaN(center.y) || float.IsNaN(center.z) ||
+			float.IsInfinity(center.x) || float.IsInfinity(center.y) || float.IsInfinity(center.z) ||
+			float.IsNaN(size.x) || float.IsNaN(size.y) || float.IsNaN(size.z) ||
+			float.IsInfinity(size.x) || float.IsInfinity(size.y) || float.IsInfinity(size.z) || size.sqrMagnitude < 0.0001f)
+			return;
+		if (!hasBounds)
+		{
+			combined = candidate;
+			hasBounds = true;
+		}
+		else
+		{
+			combined.Encapsulate(candidate);
+		}
+	}
+
+	private static Rect AddPlayerPaddingAndClip(Rect rect, float padding)
+	{
+		float left = Mathf.Clamp(rect.xMin - padding, 0f, Screen.width);
+		float right = Mathf.Clamp(rect.xMax + padding, 0f, Screen.width);
+		float top = Mathf.Clamp(rect.yMin - padding, 0f, Screen.height);
+		float bottom = Mathf.Clamp(rect.yMax + padding, 0f, Screen.height);
+		return Rect.MinMaxRect(left, top, Mathf.Max(left, right), Mathf.Max(top, bottom));
 	}
 
 	private static void DrawCornerBox(Rect rect, Color color, float thickness)
