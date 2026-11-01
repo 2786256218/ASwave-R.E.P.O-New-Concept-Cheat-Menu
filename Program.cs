@@ -438,6 +438,14 @@ namespace Cheat
 
         private bool _showMenu;
         private bool _isOpeningMenu;
+        private bool _showUpdateTimeoutDialog;
+        private bool _showUpdateAvailableDialog;
+        private bool _updateDialogCursorCaptured;
+        private CursorLockMode _updateDialogPreviousCursorLockMode;
+        private bool _updateDialogPreviousCursorVisible;
+        private bool _isDownloadingUpdate;
+        private string _updateDialogStatus = string.Empty;
+        private UpdateReleaseInfo _pendingUpdateRelease;
         private float _menuVisibleSince;
         private Rect _windowRect;
         private bool _windowInitialized;
@@ -733,6 +741,51 @@ namespace Cheat
         {
             try
             {
+                if (VersionUpdateChecker.TryConsumeNotice(out UpdateCheckNotice updateNotice, out UpdateReleaseInfo release))
+                {
+                    if (updateNotice == UpdateCheckNotice.TimedOut)
+                    {
+                        _showUpdateTimeoutDialog = true;
+                        CaptureUpdateDialogCursorState();
+                    }
+                    else if (updateNotice == UpdateCheckNotice.UpdateAvailable)
+                    {
+                        _pendingUpdateRelease = release;
+                        _showUpdateAvailableDialog = true;
+                        CaptureUpdateDialogCursorState();
+                    }
+                }
+
+                if (DirectUpdateManager.TryConsumeResult(out bool ready, out string message, out string updaterPath, out string payloadPath))
+                {
+                    _isDownloadingUpdate = false;
+                    if (ready)
+                    {
+                        try
+                        {
+                            DirectUpdateManager.LaunchUpdater(updaterPath, payloadPath, _pendingUpdateRelease?.Version);
+                            Application.Quit();
+                        }
+                        catch (Exception ex)
+                        {
+                            _updateDialogStatus = "无法启动更新程序：" + ex.Message;
+                            _showUpdateAvailableDialog = true;
+                        }
+                    }
+                    else
+                    {
+                        _updateDialogStatus = message;
+                        _showUpdateAvailableDialog = true;
+                    }
+                }
+
+                if (!_showUpdateTimeoutDialog && !_showUpdateAvailableDialog && _updateDialogCursorCaptured)
+                {
+                    Cursor.lockState = _updateDialogPreviousCursorLockMode;
+                    Cursor.visible = _updateDialogPreviousCursorVisible;
+                    _updateDialogCursorCaptured = false;
+                }
+
                 if (_eyedropperActive)
                 {
                     EnsureMenuCursorState();
@@ -899,6 +952,12 @@ namespace Cheat
 
                 if (_eyedropperActive)
                     DrawEspEyedropperOverlay();
+
+                if (_showUpdateTimeoutDialog || _showUpdateAvailableDialog)
+                {
+                    EnsureMenuCursorState();
+                    DrawUpdateDialogs();
+                }
 
                 if (stopwatch != null)
                 {
@@ -3665,6 +3724,91 @@ namespace Cheat
 
             // 预留底部空间，避免最后一个面板被滚动条或右下角缩放手柄吃掉。
             GUILayout.Space(64f);
+        }
+
+        private void DrawUpdateDialogs()
+        {
+            float width = Mathf.Min(520f, Screen.width - 32f);
+            float height = _showUpdateAvailableDialog ? 238f : 190f;
+            Rect rect = new Rect((Screen.width - width) * 0.5f, (Screen.height - height) * 0.5f, width, height);
+            GUI.depth = -1000;
+            GUI.ModalWindow(8732, rect, _ =>
+            {
+                GUILayout.Space(12f);
+                if (_showUpdateTimeoutDialog)
+                {
+                    GUILayout.Label("连接超时", _headerStyle ?? GUI.skin.label);
+                    GUILayout.Space(10f);
+                    GUILayout.Label("检查版本更新时连接 GitHub 超时，请检查网络后重试。", _hintStyle ?? GUI.skin.label);
+                    GUILayout.FlexibleSpace();
+                    GUILayout.BeginHorizontal();
+                    GUILayout.FlexibleSpace();
+                    if (GUILayout.Button("确认", GUILayout.Width(120f), GUILayout.Height(34f)))
+                    {
+                        _showUpdateTimeoutDialog = false;
+                    }
+                    if (GUILayout.Button("访问 GitHub", GUILayout.Width(120f), GUILayout.Height(34f)))
+                    {
+                        Application.OpenURL(VersionUpdateChecker.RepositoryPage);
+                        _showUpdateTimeoutDialog = false;
+                    }
+                    GUILayout.FlexibleSpace();
+                    GUILayout.EndHorizontal();
+                    GUILayout.Space(12f);
+                }
+                else if (_showUpdateAvailableDialog)
+                {
+                    string version = _pendingUpdateRelease?.Version ?? "新版本";
+                    GUILayout.Label("发现版本更新 " + version, _headerStyle ?? GUI.skin.label);
+                    GUILayout.Space(8f);
+                    GUILayout.Label("请注意：更新会重启游戏。", _hintStyle ?? GUI.skin.label);
+                    if (!string.IsNullOrEmpty(_updateDialogStatus))
+                        GUILayout.Label(_updateDialogStatus, _hintStyle ?? GUI.skin.label);
+                    else if (_pendingUpdateRelease == null || string.IsNullOrEmpty(_pendingUpdateRelease.DllUrl) || string.IsNullOrEmpty(_pendingUpdateRelease.InjectorUrl))
+                        GUILayout.Label("此版本尚未提供完整的自动更新文件，请访问 GitHub 查看。", _hintStyle ?? GUI.skin.label);
+                    GUILayout.FlexibleSpace();
+                    GUILayout.BeginHorizontal();
+                    GUILayout.FlexibleSpace();
+                    GUI.enabled = !_isDownloadingUpdate;
+                    if (GUILayout.Button(_isDownloadingUpdate ? "正在准备更新…" : "更新", GUILayout.Width(112f), GUILayout.Height(34f)))
+                    {
+                        if (_pendingUpdateRelease == null)
+                        {
+                            _updateDialogStatus = "更新信息已失效，请重新检查版本更新。";
+                        }
+                        else
+                        {
+                            _isDownloadingUpdate = true;
+                            _updateDialogStatus = "正在下载更新文件……";
+                            DirectUpdateManager.Begin(_pendingUpdateRelease);
+                        }
+                    }
+                    GUI.enabled = true;
+                    if (GUILayout.Button("访问 GitHub", GUILayout.Width(112f), GUILayout.Height(34f)))
+                    {
+                        Application.OpenURL(_pendingUpdateRelease?.PageUrl ?? VersionUpdateChecker.RepositoryPage);
+                    }
+                    GUI.enabled = !_isDownloadingUpdate;
+                    if (GUILayout.Button("取消", GUILayout.Width(112f), GUILayout.Height(34f)))
+                    {
+                        _showUpdateAvailableDialog = false;
+                        _updateDialogStatus = string.Empty;
+                    }
+                    GUI.enabled = true;
+                    GUILayout.FlexibleSpace();
+                    GUILayout.EndHorizontal();
+                    GUILayout.Space(12f);
+                }
+            }, string.Empty);
+        }
+
+        private void CaptureUpdateDialogCursorState()
+        {
+            if (_updateDialogCursorCaptured)
+                return;
+            _updateDialogPreviousCursorLockMode = Cursor.lockState;
+            _updateDialogPreviousCursorVisible = Cursor.visible;
+            _updateDialogCursorCaptured = true;
         }
 
         private bool DrawHotkeyBinderRow(string label, ref KeyCode key, bool allowEnd = true)

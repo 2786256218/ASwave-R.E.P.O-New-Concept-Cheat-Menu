@@ -20,6 +20,8 @@ Use Windows with the .NET 10 SDK and .NET Framework 4.8 Developer Pack installed
 
 The build output is `bin/Release/net48/REPO New Cheat.dll`.
 
+The build also produces `bin/Release/net48/REPOUpdater.exe` and embeds the updater into the mod DLL so it can be extracted to a temporary EXE when needed. Attach the mod DLL and standalone `smi.exe` loader to each GitHub release for automatic updates. The updater starts with Windows UAC, replaces the DLL after the game exits, restarts the game, runs the temporary loader, and removes its temporary download directory. If a release asset includes a GitHub SHA-256 digest, the menu verifies it before starting the updater.
+
 ## Source layout
 
 - `Features/` — game features and visual displays
@@ -57,6 +59,8 @@ The menu and assembly version is `3.25.15`. The release notes are in [CHANGELOG.
    也可以运行 `build.bat`。
 
 构建产物位于 `bin/Release/net48/REPO New Cheat.dll`。
+
+构建时也会生成 `bin/Release/net48/REPOUpdater.exe`，并将更新程序嵌入模组 DLL，需要更新时再释放到临时目录。发布 GitHub Release 时，请同时附上模组 DLL 和独立的 `smi.exe` 加载器。更新程序会通过系统权限提示启动，等待游戏关闭后替换 DLL、重启游戏、调用临时加载器，并清理临时下载目录。GitHub 发布信息包含 SHA-256 摘要时，菜单会在启动更新前校验文件。
 
 ## 源码目录
 

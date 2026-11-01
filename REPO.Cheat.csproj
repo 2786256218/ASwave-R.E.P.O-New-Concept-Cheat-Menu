@@ -33,6 +33,8 @@
     <Compile Remove="obj\**\*.cs" />
     <Compile Remove="decompiled\**\*.cs" />
     <Compile Remove="Mods\**\*.cs" />
+    <Compile Remove="UpdateHelper\**\*.cs" />
+    <EmbeddedResource Include="UpdateHelper\bin\$(Configuration)\net48\REPOUpdater.exe" LogicalName="Cheat.Resources.REPOUpdater.exe" />
     <Reference Include="Unity.TextMeshPro">
       <HintPath>Libs\Managed\Unity.TextMeshPro.dll</HintPath>
     </Reference>
@@ -169,5 +171,13 @@
       <Private>False</Private>
     </Reference>
   </ItemGroup>
+
+  <Target Name="BuildUpdateHelperForEmbedding" BeforeTargets="PrepareResources" Condition="'$(OS)' == 'Windows_NT'">
+    <MSBuild Projects="$(MSBuildProjectDirectory)\UpdateHelper\REPOUpdater.csproj" Targets="Restore;Build" Properties="Configuration=$(Configuration)" />
+  </Target>
+
+  <Target Name="CopyUpdateHelperBesideMod" AfterTargets="Build" Condition="'$(OS)' == 'Windows_NT'">
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\UpdateHelper\bin\$(Configuration)\net48\REPOUpdater.exe" DestinationFolder="$(TargetDir)" />
+  </Target>
 
 </Project>
