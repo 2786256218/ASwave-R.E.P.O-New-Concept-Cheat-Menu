@@ -19,6 +19,26 @@ public static class DirectUpdateManager
 	private static string _updaterPath;
 	private static string _payloadPath;
 	private static string _tempDirectory;
+	private static bool _handedOffToUpdater;
+	private static int _cancelRequested;
+
+	public static void CancelPreparedUpdate()
+	{
+		if (Volatile.Read(ref _busy) != 0)
+		{
+			Interlocked.Exchange(ref _cancelRequested, 1);
+			return;
+		}
+		lock (Sync)
+		{
+			if (_handedOffToUpdater)
+				return;
+			TryDeleteDirectory(_tempDirectory);
+			_tempDirectory = null;
+			_updaterPath = null;
+			_payloadPath = null;
+		}
+	}
 
 	public static void Begin(UpdateReleaseInfo release)
 	{
@@ -29,6 +49,7 @@ public static class DirectUpdateManager
 		}
 		if (Interlocked.CompareExchange(ref _busy, 1, 0) != 0)
 			return;
+		Interlocked.Exchange(ref _cancelRequested, 0);
 
 		ThreadPool.QueueUserWorkItem(_ => DownloadWorker(release));
 	}
@@ -80,6 +101,8 @@ public static class DirectUpdateManager
 			Verb = "runas"
 		};
 		Process.Start(startInfo);
+		lock (Sync)
+			_handedOffToUpdater = true;
 	}
 
 	private static void DownloadWorker(UpdateReleaseInfo release)
@@ -89,34 +112,61 @@ public static class DirectUpdateManager
 		{
 			directory = Path.Combine(Path.GetTempPath(), "REPO-Mod-Update-" + Guid.NewGuid().ToString("N"));
 			Directory.CreateDirectory(directory);
-			string dllPath = Path.Combine(directory, "mod-update.dll");
 			string updaterPath = Path.Combine(directory, "REPOUpdater.exe");
+			string dllPath = Path.Combine(directory, "mod-update.dll");
 			string injectorPath = Path.Combine(directory, "smi.exe");
-			DownloadFile(release.DllUrl, dllPath, release.DllSha256);
-			DownloadFile(release.InjectorUrl, injectorPath, release.InjectorSha256);
 			using (Stream updaterResource = Assembly.GetExecutingAssembly().GetManifestResourceStream("Cheat.Resources.REPOUpdater.exe"))
 			{
 				if (updaterResource == null)
-					throw new InvalidDataException("当前版本未包含更新程序，请安装完整构建版本后重试。");
+					throw new InvalidDataException("当前版本未包含更新程序，请重新安装完整构建版本后重试。");
 				using (FileStream updaterFile = new FileStream(updaterPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
 					updaterResource.CopyTo(updaterFile);
 			}
+			DownloadFile(release.DllUrl, dllPath, release.DllSha256);
+			ThrowIfCancellationRequested();
+			DownloadFile(release.InjectorUrl, injectorPath, release.InjectorSha256);
+			ThrowIfCancellationRequested();
 			if (new FileInfo(dllPath).Length < 4096 || new FileInfo(updaterPath).Length < 4096 || new FileInfo(injectorPath).Length < 4096)
 				throw new InvalidDataException("GitHub 返回的更新文件内容不完整。");
 
 			lock (Sync)
+			{
 				_tempDirectory = directory;
+				_updaterPath = updaterPath;
+			}
+			ThrowIfCancellationRequested();
 			PublishResult(true, null, updaterPath, dllPath);
 		}
 		catch (Exception ex)
 		{
-			try { if (directory != null && Directory.Exists(directory)) Directory.Delete(directory, true); } catch { }
+			TryDeleteDirectory(directory);
+			lock (Sync)
+			{
+				_tempDirectory = null;
+				_updaterPath = null;
+			}
 			PublishResult(false, "下载更新失败：" + ex.Message, null, null);
 		}
 		finally
 		{
 			Interlocked.Exchange(ref _busy, 0);
 		}
+	}
+
+	private static void ThrowIfCancellationRequested()
+	{
+		if (Volatile.Read(ref _cancelRequested) != 0)
+			throw new OperationCanceledException("更新下载已取消。");
+	}
+
+	private static void TryDeleteDirectory(string directory)
+	{
+		try
+		{
+			if (!string.IsNullOrEmpty(directory) && Directory.Exists(directory))
+				Directory.Delete(directory, true);
+		}
+		catch { }
 	}
 
 	private static void DownloadFile(string url, string destination, string expectedSha256)

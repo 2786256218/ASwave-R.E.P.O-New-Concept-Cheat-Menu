@@ -64,6 +64,8 @@ public static class VersionUpdateChecker
 		}
 
 		_status = "正在检查版本更新……";
+		lock (Sync)
+			_availableRelease = null;
 		ThreadPool.QueueUserWorkItem(_ => CheckWorker());
 	}
 

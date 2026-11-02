@@ -176,8 +176,8 @@
     <MSBuild Projects="$(MSBuildProjectDirectory)\UpdateHelper\REPOUpdater.csproj" Targets="Restore;Build" Properties="Configuration=$(Configuration)" />
   </Target>
 
-  <Target Name="CopyUpdateHelperBesideMod" AfterTargets="Build" Condition="'$(OS)' == 'Windows_NT'">
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\UpdateHelper\bin\$(Configuration)\net48\REPOUpdater.exe" DestinationFolder="$(TargetDir)" />
+  <Target Name="RemoveLegacyStandaloneUpdaterCopy" AfterTargets="Build" Condition="'$(OS)' == 'Windows_NT'">
+    <Delete Files="$(TargetDir)REPOUpdater.exe" />
   </Target>
 
 </Project>
