@@ -1,11 +1,11 @@
 using System;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
+using SharpMonoInjector;
 
 namespace REPOUpdater
 {
@@ -19,13 +19,14 @@ namespace REPOUpdater
         [STAThread]
         private static int Main(string[] args)
         {
+            string cleanupDirectory = ReadArg(args, "--temp");
             try
             {
                 string pidText = ReadArg(args, "--pid");
                 string gamePath = ReadArg(args, "--game");
                 string dllPath = ReadArg(args, "--dll");
                 string payloadPath = ReadArg(args, "--payload");
-                string tempPath = ReadArg(args, "--temp");
+                string tempPath = cleanupDirectory;
                 string version = ReadArg(args, "--release");
 
                 if (!int.TryParse(pidText, out int oldPid) || !File.Exists(gamePath) || !File.Exists(dllPath) || !File.Exists(payloadPath) || !Directory.Exists(tempPath))
@@ -34,40 +35,10 @@ namespace REPOUpdater
                 WaitForOldGame(oldPid);
                 ReplaceMod(dllPath, payloadPath);
                 StartGame(gamePath);
-                WaitForGameLaunch(gamePath);
+                int restartedGamePid = WaitForGameLaunch(gamePath);
                 Thread.Sleep(6000);
 
-                string injectorPath = FindInjector(gamePath, dllPath, tempPath);
-                if (injectorPath == null)
-                {
-                    MessageBox.Show("游戏已重新启动，模组文件已更新至 " + version + "。\n\n未找到 SharpMonoInjector（smi.exe），请使用原加载器重新注入。", "更新完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    ScheduleCleanup(tempPath);
-                    return 0;
-                }
-
-                string processName = Path.GetFileNameWithoutExtension(gamePath);
-                string injectionArgs = "inject -p " + Quote(processName) + " -a " + Quote(dllPath) + " -n Cheat -c Loader -m Init";
-                ProcessStartInfo inject = new ProcessStartInfo
-                {
-                    FileName = injectorPath,
-                    Arguments = injectionArgs,
-                    WorkingDirectory = Path.GetDirectoryName(injectorPath),
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    WindowStyle = ProcessWindowStyle.Hidden
-                };
-                bool injected = false;
-                using (Process loader = Process.Start(inject))
-                {
-                    injected = loader != null && loader.WaitForExit(30000) && loader.ExitCode == 0;
-                }
-
-                if (!injected)
-                {
-                    MessageBox.Show("游戏已重新启动，模组文件已更新，但自动注入没有成功。请重新运行加载器。", "更新完成", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    ScheduleCleanup(tempPath);
-                    return 2;
-                }
+                InjectUpdatedMod(restartedGamePid, dllPath);
 
                 MessageBox.Show("更新至 " + version + " 并重新启动完成。", "更新完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 ScheduleCleanup(tempPath);
@@ -76,6 +47,7 @@ namespace REPOUpdater
             catch (Exception ex)
             {
                 MessageBox.Show("更新未能完成：\n" + ex.Message, "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                ScheduleCleanup(cleanupDirectory);
                 return 1;
             }
         }
@@ -130,7 +102,7 @@ namespace REPOUpdater
             Process.Start(start);
         }
 
-        private static void WaitForGameLaunch(string gamePath)
+        private static int WaitForGameLaunch(string gamePath)
         {
             string processName = Path.GetFileNameWithoutExtension(gamePath);
             DateTime deadline = DateTime.UtcNow.AddMinutes(3);
@@ -140,29 +112,41 @@ namespace REPOUpdater
                 foreach (Process game in games)
                 {
                     using (game)
-                        if (game.Id != Process.GetCurrentProcess().Id) return;
+                        if (game.Id != Process.GetCurrentProcess().Id) return game.Id;
                 }
                 Thread.Sleep(500);
             }
             throw new TimeoutException("等待游戏重新启动超时，更新文件已替换，请手动启动游戏并重新加载模组。");
         }
 
-        private static string FindInjector(string gamePath, string dllPath, string tempPath)
+        private static void InjectUpdatedMod(int processId, string dllPath)
         {
-            string tempInjector = Path.Combine(tempPath, "smi.exe");
-            if (File.Exists(tempInjector)) return tempInjector;
-            string configured = Environment.GetEnvironmentVariable("REPO_MOD_INJECTOR");
-            if (!string.IsNullOrWhiteSpace(configured) && File.Exists(configured))
-                return configured;
-            string[] roots = { Path.GetDirectoryName(gamePath), Path.GetDirectoryName(dllPath), AppDomain.CurrentDomain.BaseDirectory };
-            string[] names = { "smi.exe", "SharpMonoInjector.exe" };
-            foreach (string root in roots.Where(Directory.Exists))
-                foreach (string name in names)
+            Injector injector = null;
+            Exception lastError = null;
+            DateTime deadline = DateTime.UtcNow.AddMinutes(2);
+            while (DateTime.UtcNow < deadline && injector == null)
+            {
+                try
                 {
-                    string candidate = Path.Combine(root, name);
-                    if (File.Exists(candidate)) return candidate;
+                    injector = new Injector(processId);
                 }
-            return null;
+                catch (Exception ex)
+                {
+                    lastError = ex;
+                    Thread.Sleep(1000);
+                }
+            }
+
+            if (injector == null)
+                throw new TimeoutException("等待游戏 Mono 运行时就绪超时。" + (lastError == null ? string.Empty : " " + lastError.Message));
+
+            using (injector)
+            {
+                byte[] assembly = File.ReadAllBytes(dllPath);
+                IntPtr remoteAssembly = injector.Inject(assembly, "Cheat", "Loader", "Init");
+                if (remoteAssembly == IntPtr.Zero)
+                    throw new InvalidOperationException("SharpMonoInjector 未返回已加载程序集地址。");
+            }
         }
 
         private static string ReadArg(string[] args, string name)

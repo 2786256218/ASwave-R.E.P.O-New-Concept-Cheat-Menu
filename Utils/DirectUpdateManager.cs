@@ -42,9 +42,9 @@ public static class DirectUpdateManager
 
 	public static void Begin(UpdateReleaseInfo release)
 	{
-		if (release == null || string.IsNullOrWhiteSpace(release.DllUrl) || string.IsNullOrWhiteSpace(release.InjectorUrl))
+		if (release == null || string.IsNullOrWhiteSpace(release.DllUrl))
 		{
-			PublishResult(false, "该版本缺少模组文件或临时加载器，请访问 GitHub 查看版本。", null, null);
+			PublishResult(false, "该版本没有可下载的模组文件，请访问 GitHub 查看版本。", null, null);
 			return;
 		}
 		if (Interlocked.CompareExchange(ref _busy, 1, 0) != 0)
@@ -114,7 +114,6 @@ public static class DirectUpdateManager
 			Directory.CreateDirectory(directory);
 			string updaterPath = Path.Combine(directory, "REPOUpdater.exe");
 			string dllPath = Path.Combine(directory, "mod-update.dll");
-			string injectorPath = Path.Combine(directory, "smi.exe");
 			using (Stream updaterResource = Assembly.GetExecutingAssembly().GetManifestResourceStream("Cheat.Resources.REPOUpdater.exe"))
 			{
 				if (updaterResource == null)
@@ -124,9 +123,7 @@ public static class DirectUpdateManager
 			}
 			DownloadFile(release.DllUrl, dllPath, release.DllSha256);
 			ThrowIfCancellationRequested();
-			DownloadFile(release.InjectorUrl, injectorPath, release.InjectorSha256);
-			ThrowIfCancellationRequested();
-			if (new FileInfo(dllPath).Length < 4096 || new FileInfo(updaterPath).Length < 4096 || new FileInfo(injectorPath).Length < 4096)
+			if (new FileInfo(dllPath).Length < 4096 || new FileInfo(updaterPath).Length < 4096)
 				throw new InvalidDataException("GitHub 返回的更新文件内容不完整。");
 
 			lock (Sync)

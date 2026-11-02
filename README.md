@@ -20,7 +20,7 @@ Use Windows with the .NET 10 SDK and .NET Framework 4.8 Developer Pack installed
 
 The build output is `bin/Release/net48/REPO New Cheat.dll`.
 
-The build compiles and embeds the updater in the mod DLL. Version checks only query GitHub. When you choose **Update**, the mod creates a temporary updater EXE as the download begins, then the helper requests Windows UAC, replaces the DLL after the game exits, restarts the game, runs the temporary loader, and removes the temporary files when finished. Attach the mod DLL and standalone `smi.exe` loader to each GitHub release for automatic updates. If a release asset includes a GitHub SHA-256 digest, the menu verifies it before starting the updater.
+The build compiles and embeds the updater, including its Mono injection code, in the mod DLL. Version checks only query GitHub. When you choose **Update**, the mod creates a temporary updater EXE as the download begins. The elevated helper downloads the release DLL, replaces the current file after the game exits, restarts the game, injects the updated DLL, and removes its temporary files when finished. Each GitHub release only needs the mod DLL. If a release asset includes a GitHub SHA-256 digest, the menu verifies it before starting the updater. The injector source and its MIT license notice are in `UpdateHelper/`.
 
 ## Source layout
 
@@ -60,7 +60,7 @@ The menu and assembly version is `3.25.15`. The release notes are in [CHANGELOG.
 
 构建产物位于 `bin/Release/net48/REPO New Cheat.dll`。
 
-构建时会编译更新程序并将它嵌入模组 DLL。检查更新只查询 GitHub；选择“更新”开始下载时，才会在临时目录生成更新程序。它会请求系统权限，等待游戏关闭后替换 DLL、重启游戏、调用临时加载器，并在完成后清理临时文件。发布 GitHub Release 时，请同时附上模组 DLL 和独立的 `smi.exe` 加载器。GitHub 发布信息包含 SHA-256 摘要时，菜单会在启动更新前校验文件。
+构建时会将包含 Mono 注入代码的更新程序编译并嵌入模组 DLL。检查更新只查询 GitHub；选择“更新”开始下载时，才会在临时目录生成更新程序。它会请求系统权限，下载并替换 DLL、重启游戏、注入新 DLL，完成后清理临时文件。GitHub Release 只需发布模组 DLL，无需额外发布加载器。GitHub 发布信息包含 SHA-256 摘要时，菜单会在启动更新前校验文件。注入代码来源及 MIT 许可说明见 `UpdateHelper/`。
 
 ## 源码目录
 

@@ -3775,7 +3775,7 @@ namespace Cheat
                     }
                     if (!string.IsNullOrEmpty(_updateDialogStatus))
                         GUILayout.Label(_updateDialogStatus, _hintStyle ?? GUI.skin.label);
-                    else if (_pendingUpdateRelease == null || string.IsNullOrEmpty(_pendingUpdateRelease.DllUrl) || string.IsNullOrEmpty(_pendingUpdateRelease.InjectorUrl))
+                    else if (_pendingUpdateRelease == null || string.IsNullOrEmpty(_pendingUpdateRelease.DllUrl))
                         GUILayout.Label("此版本尚未提供完整的自动更新文件，请访问 GitHub 查看。", _hintStyle ?? GUI.skin.label);
                     GUILayout.FlexibleSpace();
                     GUILayout.BeginHorizontal();

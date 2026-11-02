@@ -24,8 +24,6 @@ public sealed class UpdateReleaseInfo
 	public string PageUrl { get; internal set; }
 	public string DllUrl { get; internal set; }
 	public string DllSha256 { get; internal set; }
-	public string InjectorUrl { get; internal set; }
-	public string InjectorSha256 { get; internal set; }
 }
 
 /// <summary>Checks the configured GitHub repository for a newer release.</summary>
@@ -176,7 +174,6 @@ public static class VersionUpdateChecker
 
 		List<AssetInfo> assets = ReadAssets(assetJson);
 		AssetInfo dll = null;
-		AssetInfo injector = null;
 		for (int i = 0; i < assets.Count; i++)
 		{
 			AssetInfo asset = assets[i];
@@ -186,8 +183,6 @@ public static class VersionUpdateChecker
 				if (dll == null || asset.Name.Equals("REPO.New.Cheat.dll", StringComparison.OrdinalIgnoreCase) || asset.Name.Equals("REPO New Cheat.dll", StringComparison.OrdinalIgnoreCase))
 					dll = asset;
 			}
-			if (asset.Name.Equals("smi.exe", StringComparison.OrdinalIgnoreCase) || asset.Name.Equals("SharpMonoInjector.exe", StringComparison.OrdinalIgnoreCase))
-				injector = asset;
 		}
 
 		release = new UpdateReleaseInfo
@@ -197,9 +192,7 @@ public static class VersionUpdateChecker
 			Body = ReadJsonStringProperty(json, "body"),
 			PageUrl = pageMatch.Success ? UnescapeJson(ReadJsonStringProperty(json, "html_url")) : "https://github.com/" + Repository + "/releases/latest",
 			DllUrl = dll?.Url,
-			DllSha256 = dll?.Sha256,
-			InjectorUrl = injector?.Url,
-			InjectorSha256 = injector?.Sha256
+			DllSha256 = dll?.Sha256
 		};
 		return true;
 	}
