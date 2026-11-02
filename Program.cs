@@ -451,6 +451,7 @@ namespace Cheat
         private bool _windowInitialized;
         private Vector2 _scrollPosition;
         private Vector2 _updateNotesScrollPosition;
+        private Vector2 _updateDialogScrollPosition;
         private MenuTab _selectedTab = MenuTab.Player;
         private SpawnerCategory _selectedSpawnerCategory = SpawnerCategory.Item;
         private CursorLockMode _previousCursorLockMode;
@@ -507,6 +508,10 @@ namespace Cheat
         private GUIStyle _windowStyle;
         private GUIStyle _headerStyle;
         private GUIStyle _hintStyle;
+        private GUIStyle _updateDialogTitleStyle;
+        private GUIStyle _updateDialogVersionStyle;
+        private GUIStyle _updateDialogBodyStyle;
+        private GUIStyle _updateDialogButtonStyle;
         private GUIStyle _titleStyle;
         private GUIStyle _versionStyle;
         private GUIStyle _sectionStyle;
@@ -957,6 +962,7 @@ namespace Cheat
 
                 if (_showUpdateTimeoutDialog || _showUpdateAvailableDialog)
                 {
+                    EnsureStyles();
                     EnsureMenuCursorState();
                     DrawUpdateDialogs();
                 }
@@ -1309,6 +1315,24 @@ namespace Cheat
             _buttonStyle.padding = new RectOffset(14, 14, 9, 11);
             _buttonStyle.clipping = TextClipping.Overflow;
             SetAllStates(_buttonStyle, _buttonTexture, buttonText);
+
+            _updateDialogTitleStyle = new GUIStyle(_headerStyle);
+            _updateDialogTitleStyle.fontSize = 24;
+            _updateDialogTitleStyle.alignment = TextAnchor.MiddleLeft;
+            _updateDialogTitleStyle.normal.textColor = accentText;
+
+            _updateDialogVersionStyle = new GUIStyle(_sectionStyle);
+            _updateDialogVersionStyle.fontSize = 16;
+            _updateDialogVersionStyle.alignment = TextAnchor.MiddleRight;
+
+            _updateDialogBodyStyle = new GUIStyle(_labelStyle);
+            _updateDialogBodyStyle.fontSize = 15;
+            _updateDialogBodyStyle.wordWrap = true;
+            _updateDialogBodyStyle.padding = new RectOffset(8, 8, 6, 6);
+
+            _updateDialogButtonStyle = new GUIStyle(_buttonStyle);
+            _updateDialogButtonStyle.fontSize = 16;
+            _updateDialogButtonStyle.fixedHeight = 42f;
 
             _tabStyle = new GUIStyle(GUI.skin.button);
             _tabStyle.fontSize = 15;
@@ -3731,26 +3755,40 @@ namespace Cheat
 
         private void DrawUpdateDialogs()
         {
-            float width = Mathf.Min(520f, Screen.width - 32f);
-            float height = _showUpdateAvailableDialog ? 360f : 190f;
+            float width = Mathf.Min(620f, Mathf.Max(420f, Screen.width - 32f));
+            float targetHeight = _showUpdateAvailableDialog ? 560f : 250f;
+            float height = Mathf.Min(targetHeight, Mathf.Max(220f, Screen.height - 28f));
             Rect rect = new Rect((Screen.width - width) * 0.5f, (Screen.height - height) * 0.5f, width, height);
             GUI.depth = -1000;
             GUI.ModalWindow(8732, rect, _ =>
             {
+                GUILayout.Space(4f);
+                DrawUpdateDialogAccentRule();
                 GUILayout.Space(12f);
+                _updateDialogScrollPosition = GUILayout.BeginScrollView(
+                    _updateDialogScrollPosition,
+                    false,
+                    true,
+                    GUI.skin.horizontalScrollbar,
+                    GUI.skin.verticalScrollbar,
+                    _scrollViewStyle ?? GUI.skin.scrollView,
+                    GUILayout.ExpandHeight(true));
                 if (_showUpdateTimeoutDialog)
                 {
-                    GUILayout.Label("连接超时", _headerStyle ?? GUI.skin.label);
-                    GUILayout.Space(10f);
-                    GUILayout.Label("检查版本更新时连接 GitHub 超时，请检查网络后重试。", _hintStyle ?? GUI.skin.label);
+                    GUILayout.Label("连接超时", _updateDialogTitleStyle ?? GUI.skin.label, GUILayout.Height(34f));
+                    GUILayout.Space(6f);
+                    GUILayout.BeginVertical(_panelStyle ?? GUI.skin.box);
+                    GUILayout.Label("暂时无法连接 GitHub。请检查网络后重试，也可以直接打开仓库页面。", _updateDialogBodyStyle ?? GUI.skin.label);
+                    GUILayout.EndVertical();
                     GUILayout.FlexibleSpace();
                     GUILayout.BeginHorizontal();
                     GUILayout.FlexibleSpace();
-                    if (GUILayout.Button("确认", GUILayout.Width(120f), GUILayout.Height(34f)))
+                    if (GUILayout.Button("确认", _updateDialogButtonStyle ?? GUI.skin.button, GUILayout.Width(132f), GUILayout.Height(42f)))
                     {
                         _showUpdateTimeoutDialog = false;
                     }
-                    if (GUILayout.Button("访问 GitHub", GUILayout.Width(120f), GUILayout.Height(34f)))
+                    GUILayout.Space(10f);
+                    if (GUILayout.Button("访问 GitHub", _updateDialogButtonStyle ?? GUI.skin.button, GUILayout.Width(148f), GUILayout.Height(42f)))
                     {
                         Application.OpenURL(VersionUpdateChecker.RepositoryPage);
                         _showUpdateTimeoutDialog = false;
@@ -3762,26 +3800,49 @@ namespace Cheat
                 else if (_showUpdateAvailableDialog)
                 {
                     string version = _pendingUpdateRelease?.Version ?? "新版本";
-                    GUILayout.Label("发现版本更新 " + version, _headerStyle ?? GUI.skin.label);
+                    GUILayout.BeginHorizontal();
+                    GUILayout.BeginVertical();
+                    GUILayout.Label("发现版本更新", _updateDialogTitleStyle ?? GUI.skin.label, GUILayout.Height(32f));
+                    GUILayout.Label("版本 " + version, _updateDialogVersionStyle ?? GUI.skin.label, GUILayout.Height(26f));
+                    GUILayout.EndVertical();
+                    GUILayout.FlexibleSpace();
+                    GUILayout.Label("REPO", _titleStyle ?? GUI.skin.label, GUILayout.Width(54f), GUILayout.Height(36f));
+                    GUILayout.EndHorizontal();
                     GUILayout.Space(8f);
-                    GUILayout.Label("请注意：更新会重启游戏。", _hintStyle ?? GUI.skin.label);
+                    GUILayout.BeginVertical(_panelStyle ?? GUI.skin.box);
+                    GUILayout.Label("更新会重启游戏。", _updateDialogTitleStyle ?? GUI.skin.label, GUILayout.Height(32f));
+                    GUILayout.Label("更新完成后将自动重新启动并载入新版本。", _updateDialogBodyStyle ?? GUI.skin.label);
+                    GUILayout.EndVertical();
                     if (!string.IsNullOrWhiteSpace(_pendingUpdateRelease?.Body))
                     {
-                        GUILayout.Space(6f);
-                        GUILayout.Label("版本介绍", _sectionStyle ?? GUI.skin.label);
-                        _updateNotesScrollPosition = GUILayout.BeginScrollView(_updateNotesScrollPosition, false, true, GUILayout.Height(118f));
-                        GUILayout.Label(_pendingUpdateRelease.Body, _hintStyle ?? GUI.skin.label, GUILayout.ExpandWidth(true));
+                        GUILayout.Space(10f);
+                        GUILayout.Label("版本介绍", _sectionStyle ?? GUI.skin.label, GUILayout.Height(24f));
+                        GUILayout.BeginVertical(_panelStyle ?? GUI.skin.box);
+                        float notesHeight = Mathf.Clamp(height * 0.30f, 112f, 150f);
+                        _updateNotesScrollPosition = GUILayout.BeginScrollView(_updateNotesScrollPosition, false, true, GUI.skin.horizontalScrollbar, GUI.skin.verticalScrollbar, _scrollViewStyle ?? GUI.skin.scrollView, GUILayout.Height(notesHeight));
+                        GUILayout.Label(_pendingUpdateRelease.Body, _updateDialogBodyStyle ?? GUI.skin.label, GUILayout.ExpandWidth(true));
                         GUILayout.EndScrollView();
+                        GUILayout.EndVertical();
                     }
                     if (!string.IsNullOrEmpty(_updateDialogStatus))
-                        GUILayout.Label(_updateDialogStatus, _hintStyle ?? GUI.skin.label);
+                    {
+                        GUILayout.Space(6f);
+                        GUILayout.Label(_updateDialogStatus, _updateDialogBodyStyle ?? GUI.skin.label);
+                    }
                     else if (_pendingUpdateRelease == null || string.IsNullOrEmpty(_pendingUpdateRelease.DllUrl))
-                        GUILayout.Label("此版本尚未提供完整的自动更新文件，请访问 GitHub 查看。", _hintStyle ?? GUI.skin.label);
+                    {
+                        GUILayout.Space(6f);
+                        GUILayout.Label("此版本暂时没有可下载的更新文件，请访问 GitHub 查看。", _updateDialogBodyStyle ?? GUI.skin.label);
+                    }
                     GUILayout.FlexibleSpace();
                     GUILayout.BeginHorizontal();
                     GUILayout.FlexibleSpace();
-                    GUI.enabled = !_isDownloadingUpdate;
-                    if (GUILayout.Button(_isDownloadingUpdate ? "正在准备更新…" : "更新", GUILayout.Width(112f), GUILayout.Height(34f)))
+                    bool previousEnabled = GUI.enabled;
+                    GUI.enabled = previousEnabled && !_isDownloadingUpdate;
+                    Color previousColor = GUI.color;
+                    Color accent = _sectionStyle == null ? new Color(0.22f, 0.62f, 0.92f, 1f) : _sectionStyle.normal.textColor;
+                    GUI.color = accent;
+                    if (GUILayout.Button(_isDownloadingUpdate ? "正在准备更新…" : "立即更新", _updateDialogButtonStyle ?? GUI.skin.button, GUILayout.Width(142f), GUILayout.Height(42f)))
                     {
                         if (_pendingUpdateRelease == null)
                         {
@@ -3794,24 +3855,37 @@ namespace Cheat
                             DirectUpdateManager.Begin(_pendingUpdateRelease);
                         }
                     }
-                    GUI.enabled = true;
-                    if (GUILayout.Button("访问 GitHub", GUILayout.Width(112f), GUILayout.Height(34f)))
+                    GUI.color = previousColor;
+                    GUI.enabled = previousEnabled;
+                    if (GUILayout.Button("访问 GitHub", _updateDialogButtonStyle ?? GUI.skin.button, GUILayout.Width(132f), GUILayout.Height(42f)))
                     {
                         Application.OpenURL(_pendingUpdateRelease?.PageUrl ?? VersionUpdateChecker.RepositoryPage);
                     }
-                    GUI.enabled = !_isDownloadingUpdate;
-                    if (GUILayout.Button("取消", GUILayout.Width(112f), GUILayout.Height(34f)))
+                    GUI.enabled = previousEnabled && !_isDownloadingUpdate;
+                    if (GUILayout.Button("取消", _updateDialogButtonStyle ?? GUI.skin.button, GUILayout.Width(112f), GUILayout.Height(42f)))
                     {
                         _showUpdateAvailableDialog = false;
                         _updateDialogStatus = string.Empty;
                         DirectUpdateManager.CancelPreparedUpdate();
                     }
-                    GUI.enabled = true;
+                    GUI.enabled = previousEnabled;
                     GUILayout.FlexibleSpace();
                     GUILayout.EndHorizontal();
-                    GUILayout.Space(12f);
+                    GUILayout.Space(6f);
                 }
-            }, string.Empty);
+                GUILayout.EndScrollView();
+            }, string.Empty, _windowStyle ?? GUI.skin.window);
+        }
+
+        private void DrawUpdateDialogAccentRule()
+        {
+            Rect line = GUILayoutUtility.GetRect(0f, 3f, GUILayout.ExpandWidth(true));
+            if (_whiteTexture == null)
+                return;
+            Color previous = GUI.color;
+            GUI.color = _sectionStyle == null ? Color.cyan : _sectionStyle.normal.textColor;
+            GUI.DrawTexture(line, _whiteTexture);
+            GUI.color = previous;
         }
 
         private void CaptureUpdateDialogCursorState()

@@ -12,12 +12,12 @@
     <AssemblyName>REPO New Cheat</AssemblyName>
     <Product>REPO New Cheat</Product>
     <Title>REPO New Cheat</Title>
-    <Version>3.25.15</Version>
+    <Version>3.27.31</Version>
     <Description>A cheat menu for REPO</Description>
     <Copyright>Copyright 漏  2024</Copyright>
-    <AssemblyVersion>3.25.15.0</AssemblyVersion>
-    <FileVersion>3.25.15.0</FileVersion>
-    <InformationalVersion>3.25.15</InformationalVersion>
+    <AssemblyVersion>3.27.31.0</AssemblyVersion>
+    <FileVersion>3.27.31.0</FileVersion>
+    <InformationalVersion>3.27.31</InformationalVersion>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>

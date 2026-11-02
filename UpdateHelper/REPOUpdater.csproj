@@ -11,5 +11,9 @@
     <AssemblyName>REPOUpdater</AssemblyName>
     <RootNamespace>REPOUpdater</RootNamespace>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Microsoft.CSharp" />
+  </ItemGroup>
 </Project>

@@ -96,11 +96,21 @@ public static class DirectUpdateManager
 				" --payload " + Quote(payloadPath) +
 				" --temp " + Quote(_tempDirectory ?? Path.GetDirectoryName(updaterPath)) +
 				" --release " + Quote(releaseVersion ?? string.Empty),
-			WorkingDirectory = Path.GetDirectoryName(gamePath),
+			WorkingDirectory = Path.GetDirectoryName(updaterPath),
 			UseShellExecute = true,
-			Verb = "runas"
+			Verb = "runas",
+			WindowStyle = ProcessWindowStyle.Normal,
+			ErrorDialog = true
 		};
-		Process.Start(startInfo);
+		// ShellExecute + runas starts the extracted updater as a separate elevated process.
+		// Dispose only the local process handle; do not wait for or own the updater lifetime.
+		using (Process updater = Process.Start(startInfo))
+		{
+			if (updater == null)
+				throw new InvalidOperationException("Windows 未能启动独立更新程序。");
+			if (updater.Id == Process.GetCurrentProcess().Id)
+				throw new InvalidOperationException("更新程序未能脱离游戏进程启动。");
+		}
 		lock (Sync)
 			_handedOffToUpdater = true;
 	}
