@@ -450,7 +450,6 @@ namespace Cheat
         private Rect _windowRect;
         private bool _windowInitialized;
         private Vector2 _scrollPosition;
-        private Vector2 _announcementScrollPosition;
         private Vector2 _updateNotesScrollPosition;
         private MenuTab _selectedTab = MenuTab.Player;
         private SpawnerCategory _selectedSpawnerCategory = SpawnerCategory.Item;
@@ -3450,8 +3449,6 @@ namespace Cheat
 
         private void DrawMiscPage(ConfigData config, ref bool configChanged)
         {
-            DrawVersionAnnouncementPanel();
-
             BeginPanel("快捷操作", "常用操作与相关设置。");
             bool forceReturnClicked = DrawActionButton("强制退回到主菜单");
             if (forceReturnClicked)
@@ -3730,28 +3727,6 @@ namespace Cheat
 
             // 预留底部空间，避免最后一个面板被滚动条或右下角缩放手柄吃掉。
             GUILayout.Space(64f);
-        }
-
-        private void DrawVersionAnnouncementPanel()
-        {
-            BeginPanel("版本公告", "公告内容来自 GitHub 最新 Release。检查更新时会同步刷新。 ");
-            UpdateReleaseInfo release = VersionUpdateChecker.LatestRelease;
-            if (release == null)
-            {
-                GUILayout.Label(VersionUpdateChecker.IsChecking ? "正在读取版本公告……" : "暂时没有可显示的版本公告。", _hintStyle);
-            }
-            else
-            {
-                string title = string.IsNullOrWhiteSpace(release.Title) ? release.Version : release.Title;
-                GUILayout.Label(title + "  ·  " + release.Version, _labelStyle);
-                string body = string.IsNullOrWhiteSpace(release.Body) ? "此版本没有填写介绍内容。" : release.Body;
-                _announcementScrollPosition = GUILayout.BeginScrollView(_announcementScrollPosition, false, true, GUILayout.Height(150f));
-                GUILayout.Label(body, _hintStyle, GUILayout.ExpandWidth(true));
-                GUILayout.EndScrollView();
-                if (DrawActionButton("查看 GitHub Release"))
-                    Application.OpenURL(release.PageUrl ?? VersionUpdateChecker.RepositoryPage);
-            }
-            GUILayout.EndVertical();
         }
 
         private void DrawUpdateDialogs()
