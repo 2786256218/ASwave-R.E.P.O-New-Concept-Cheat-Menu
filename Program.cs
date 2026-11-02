@@ -450,6 +450,8 @@ namespace Cheat
         private Rect _windowRect;
         private bool _windowInitialized;
         private Vector2 _scrollPosition;
+        private Vector2 _announcementScrollPosition;
+        private Vector2 _updateNotesScrollPosition;
         private MenuTab _selectedTab = MenuTab.Player;
         private SpawnerCategory _selectedSpawnerCategory = SpawnerCategory.Item;
         private CursorLockMode _previousCursorLockMode;
@@ -768,6 +770,7 @@ namespace Cheat
                         }
                         catch (Exception ex)
                         {
+                            DirectUpdateManager.CancelPreparedUpdate();
                             _updateDialogStatus = "无法启动更新程序：" + ex.Message;
                             _showUpdateAvailableDialog = true;
                         }
@@ -989,6 +992,7 @@ namespace Cheat
             }
 
             _cleanupPrepared = true;
+            DirectUpdateManager.CancelPreparedUpdate();
             RestoreGameInputPriority();
             RestoreCursorState();
             ReleaseMenuVisualResources(true);
@@ -3446,6 +3450,8 @@ namespace Cheat
 
         private void DrawMiscPage(ConfigData config, ref bool configChanged)
         {
+            DrawVersionAnnouncementPanel();
+
             BeginPanel("快捷操作", "常用操作与相关设置。");
             bool forceReturnClicked = DrawActionButton("强制退回到主菜单");
             if (forceReturnClicked)
@@ -3726,10 +3732,32 @@ namespace Cheat
             GUILayout.Space(64f);
         }
 
+        private void DrawVersionAnnouncementPanel()
+        {
+            BeginPanel("版本公告", "公告内容来自 GitHub 最新 Release。检查更新时会同步刷新。 ");
+            UpdateReleaseInfo release = VersionUpdateChecker.LatestRelease;
+            if (release == null)
+            {
+                GUILayout.Label(VersionUpdateChecker.IsChecking ? "正在读取版本公告……" : "暂时没有可显示的版本公告。", _hintStyle);
+            }
+            else
+            {
+                string title = string.IsNullOrWhiteSpace(release.Title) ? release.Version : release.Title;
+                GUILayout.Label(title + "  ·  " + release.Version, _labelStyle);
+                string body = string.IsNullOrWhiteSpace(release.Body) ? "此版本没有填写介绍内容。" : release.Body;
+                _announcementScrollPosition = GUILayout.BeginScrollView(_announcementScrollPosition, false, true, GUILayout.Height(150f));
+                GUILayout.Label(body, _hintStyle, GUILayout.ExpandWidth(true));
+                GUILayout.EndScrollView();
+                if (DrawActionButton("查看 GitHub Release"))
+                    Application.OpenURL(release.PageUrl ?? VersionUpdateChecker.RepositoryPage);
+            }
+            GUILayout.EndVertical();
+        }
+
         private void DrawUpdateDialogs()
         {
             float width = Mathf.Min(520f, Screen.width - 32f);
-            float height = _showUpdateAvailableDialog ? 238f : 190f;
+            float height = _showUpdateAvailableDialog ? 360f : 190f;
             Rect rect = new Rect((Screen.width - width) * 0.5f, (Screen.height - height) * 0.5f, width, height);
             GUI.depth = -1000;
             GUI.ModalWindow(8732, rect, _ =>
@@ -3762,6 +3790,14 @@ namespace Cheat
                     GUILayout.Label("发现版本更新 " + version, _headerStyle ?? GUI.skin.label);
                     GUILayout.Space(8f);
                     GUILayout.Label("请注意：更新会重启游戏。", _hintStyle ?? GUI.skin.label);
+                    if (!string.IsNullOrWhiteSpace(_pendingUpdateRelease?.Body))
+                    {
+                        GUILayout.Space(6f);
+                        GUILayout.Label("版本介绍", _sectionStyle ?? GUI.skin.label);
+                        _updateNotesScrollPosition = GUILayout.BeginScrollView(_updateNotesScrollPosition, false, true, GUILayout.Height(118f));
+                        GUILayout.Label(_pendingUpdateRelease.Body, _hintStyle ?? GUI.skin.label, GUILayout.ExpandWidth(true));
+                        GUILayout.EndScrollView();
+                    }
                     if (!string.IsNullOrEmpty(_updateDialogStatus))
                         GUILayout.Label(_updateDialogStatus, _hintStyle ?? GUI.skin.label);
                     else if (_pendingUpdateRelease == null || string.IsNullOrEmpty(_pendingUpdateRelease.DllUrl) || string.IsNullOrEmpty(_pendingUpdateRelease.InjectorUrl))
@@ -3793,6 +3829,7 @@ namespace Cheat
                     {
                         _showUpdateAvailableDialog = false;
                         _updateDialogStatus = string.Empty;
+                        DirectUpdateManager.CancelPreparedUpdate();
                     }
                     GUI.enabled = true;
                     GUILayout.FlexibleSpace();

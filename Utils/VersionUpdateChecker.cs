@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Reflection;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using SystemVersion = System.Version;
@@ -18,6 +19,8 @@ public enum UpdateCheckNotice
 public sealed class UpdateReleaseInfo
 {
 	public string Version { get; internal set; }
+	public string Title { get; internal set; }
+	public string Body { get; internal set; }
 	public string PageUrl { get; internal set; }
 	public string DllUrl { get; internal set; }
 	public string DllSha256 { get; internal set; }
@@ -36,6 +39,7 @@ public static class VersionUpdateChecker
 	private static int _checking;
 	private static int _pendingNotice;
 	private static UpdateReleaseInfo _availableRelease;
+	private static UpdateReleaseInfo _latestRelease;
 	private static volatile string _status = "尚未检查版本更新。";
 
 	public static string Status => _status;
@@ -46,6 +50,14 @@ public static class VersionUpdateChecker
 		{
 			lock (Sync)
 				return _availableRelease;
+		}
+	}
+	public static UpdateReleaseInfo LatestRelease
+	{
+		get
+		{
+			lock (Sync)
+				return _latestRelease;
 		}
 	}
 
@@ -108,14 +120,20 @@ public static class VersionUpdateChecker
 				if (SystemVersion.TryParse(AppVersion.Number, out SystemVersion currentVersion) && latestVersion.CompareTo(currentVersion) > 0)
 				{
 					lock (Sync)
+					{
+						_latestRelease = release;
 						_availableRelease = release;
+					}
 					_status = "发现新版本：" + release.Version;
 					Interlocked.Exchange(ref _pendingNotice, (int)UpdateCheckNotice.UpdateAvailable);
 				}
 				else
 				{
 					lock (Sync)
+					{
+						_latestRelease = release;
 						_availableRelease = null;
+					}
 					_status = "当前已是最新版本（" + AppVersion.Display + "）。";
 				}
 			}
@@ -175,7 +193,9 @@ public static class VersionUpdateChecker
 		release = new UpdateReleaseInfo
 		{
 			Version = tagMatch.Groups[1].Value,
-			PageUrl = pageMatch.Success ? UnescapeJson(pageMatch.Groups[1].Value) : "https://github.com/" + Repository + "/releases/latest",
+			Title = ReadJsonStringProperty(json, "name"),
+			Body = ReadJsonStringProperty(json, "body"),
+			PageUrl = pageMatch.Success ? UnescapeJson(ReadJsonStringProperty(json, "html_url")) : "https://github.com/" + Repository + "/releases/latest",
 			DllUrl = dll?.Url,
 			DllSha256 = dll?.Sha256,
 			InjectorUrl = injector?.Url,
@@ -216,7 +236,69 @@ public static class VersionUpdateChecker
 
 	private static string UnescapeJson(string value)
 	{
-		return (value ?? string.Empty).Replace("\\/", "/").Replace("\\u0026", "&").Replace("\\u002F", "/");
+		if (string.IsNullOrEmpty(value))
+			return string.Empty;
+
+		StringBuilder result = new StringBuilder(value.Length);
+		for (int i = 0; i < value.Length; i++)
+		{
+			char current = value[i];
+			if (current != '\\' || i + 1 >= value.Length)
+			{
+				result.Append(current);
+				continue;
+			}
+
+			char escaped = value[++i];
+			switch (escaped)
+			{
+				case '"': result.Append('"'); break;
+				case '\\': result.Append('\\'); break;
+				case '/': result.Append('/'); break;
+				case 'b': result.Append('\b'); break;
+				case 'f': result.Append('\f'); break;
+				case 'n': result.Append('\n'); break;
+				case 'r': result.Append('\r'); break;
+				case 't': result.Append('\t'); break;
+				case 'u':
+					if (i + 4 < value.Length && ushort.TryParse(value.Substring(i + 1, 4), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out ushort code))
+					{
+						result.Append((char)code);
+						i += 4;
+					}
+					else
+						result.Append('u');
+					break;
+				default: result.Append(escaped); break;
+			}
+		}
+		return result.ToString();
+	}
+
+	private static string ReadJsonStringProperty(string json, string propertyName)
+	{
+		Match property = Regex.Match(json ?? string.Empty, "\"" + Regex.Escape(propertyName) + "\"\\s*:\\s*\"", RegexOptions.Singleline);
+		if (!property.Success)
+			return string.Empty;
+
+		int valueStart = property.Index + property.Length;
+		bool escaped = false;
+		for (int i = valueStart; i < json.Length; i++)
+		{
+			if (escaped)
+			{
+				escaped = false;
+				continue;
+			}
+			if (json[i] == '\\')
+			{
+				escaped = true;
+				continue;
+			}
+			if (json[i] == '"')
+				return UnescapeJson(json.Substring(valueStart, i - valueStart));
+		}
+		return string.Empty;
 	}
 
 	private static bool TryBuildLatestReleaseUrl(string repository, out string url)
